@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import SEOAgent from './components/SEOAgent';
 import SiteCrawler from './components/SiteCrawler';
+import NewsSEO from './components/NewsSEO';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'analyzer' | 'crawler'>('analyzer');
+  const [activeTab, setActiveTab] = useState<'analyzer' | 'crawler' | 'news'>('analyzer');
 
   return (
     <div>
@@ -30,11 +31,23 @@ function App() {
             >
               SEO Site Crawler
             </button>
+            <button
+              onClick={() => setActiveTab('news')}
+              className={`px-6 py-4 font-medium text-sm transition-colors ${
+                activeTab === 'news'
+                  ? 'text-violet-600 border-b-2 border-violet-600'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              News SEO
+            </button>
           </div>
         </div>
       </div>
 
-      {activeTab === 'analyzer' ? <SEOAgent /> : <SiteCrawler />}
+      {activeTab === 'analyzer' && <SEOAgent />}
+      {activeTab === 'crawler' && <SiteCrawler />}
+      {activeTab === 'news' && <NewsSEO />}
     </div>
   );
 }

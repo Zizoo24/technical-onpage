@@ -12,6 +12,9 @@
  */
 import { Router } from 'express';
 import { normalizeUrl, shouldDenyUrl, parseRobotsTxt } from '../lib/url-utils.js';
+import { analyzeInternalLinking } from '../lib/modules/internal-linking.js';
+import { analyzeCrawlDepth } from '../lib/modules/crawl-depth.js';
+import { analyzeDuplicateUrls } from '../lib/modules/duplicate-protection.js';
 
 export const seoCrawlerRouter = Router();
 
@@ -319,6 +322,25 @@ seoCrawlerRouter.post('/', async (req, res) => {
     };
 
     const result = await crawl(config);
+
+    // Post-crawl analysis modules (6, 7, 9)
+    result.analysis = {};
+    try {
+      result.analysis.internal_linking = analyzeInternalLinking(result.pages);
+    } catch (e) {
+      result.analysis.internal_linking = { module: 'internal_linking', status: 'FAIL', error: e.message };
+    }
+    try {
+      result.analysis.crawl_depth = analyzeCrawlDepth(result.pages, config);
+    } catch (e) {
+      result.analysis.crawl_depth = { module: 'crawl_depth', status: 'FAIL', error: e.message };
+    }
+    try {
+      result.analysis.duplicate_protection = analyzeDuplicateUrls(result.pages);
+    } catch (e) {
+      result.analysis.duplicate_protection = { module: 'duplicate_protection', status: 'FAIL', error: e.message };
+    }
+
     return res.json(result);
   } catch (error) {
     console.error('seo-site-crawler error:', error);

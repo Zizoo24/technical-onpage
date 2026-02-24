@@ -4,6 +4,7 @@ import { dirname, join } from 'path';
 import { seoIntelligenceRouter } from './routes/seo-intelligence.js';
 import { seoCrawlerRouter } from './routes/seo-site-crawler.js';
 import { newsSeoRouter } from './routes/news-seo.js';
+import { unifiedAuditRouter } from './routes/unified-audit.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -36,6 +37,7 @@ app.get('/health', (_req, res) => {
 app.use('/api/seo-intelligence', seoIntelligenceRouter);
 app.use('/api/seo-site-crawler', seoCrawlerRouter);
 app.use('/api/news-seo', newsSeoRouter);
+app.use('/api/unified-audit', unifiedAuditRouter);
 
 // Backward-compatible Supabase-style paths (if a reverse proxy sends these)
 app.use('/functions/v1/seo-intelligence', seoIntelligenceRouter);

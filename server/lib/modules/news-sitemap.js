@@ -1,12 +1,20 @@
 /**
- * Module 1 — News Sitemap Engine
+ * Module 4 — News Sitemap Engine
  *
- * Detects and validates news sitemaps:
- *   - /sitemap.xml, /sitemap_index.xml, /news-sitemap.xml, /sitemap.xml.gz
+ * Validates news sitemaps for Google News compliance:
+ *   - News namespace detection
+ *   - publication_date presence & 48h freshness window
+ *   - Max 1000 URLs per news sitemap
  *   - Recursive sitemap index parsing
- *   - Lastmod freshness, Google News format validation
- *   - Max 1000 URLs per news sitemap, 48h freshness window
+ *
+ * Accepts optional pre-discovered sitemap data from
+ * sitemap-discovery.js to avoid duplicate fetching.
  */
+
+const NEWS_FRESHNESS_HOURS = 48;
+const MAX_NEWS_URLS = 1000;
+const MAX_SITEMAPS_TO_PARSE = 20;
+const FETCH_TIMEOUT = 10000;
 
 const SITEMAP_PATHS = [
   '/sitemap.xml',
@@ -14,11 +22,6 @@ const SITEMAP_PATHS = [
   '/news-sitemap.xml',
   '/sitemap.xml.gz',
 ];
-
-const NEWS_FRESHNESS_HOURS = 48;
-const MAX_NEWS_URLS = 1000;
-const MAX_SITEMAPS_TO_PARSE = 20; // prevent runaway recursion
-const FETCH_TIMEOUT = 10000;
 
 async function fetchWithTimeout(url, timeoutMs = FETCH_TIMEOUT) {
   const controller = new AbortController();
@@ -101,7 +104,11 @@ function parseSitemapIndexEntries(xml) {
   return entries;
 }
 
-export async function analyzeNewsSitemap(baseUrl) {
+/**
+ * @param {string} baseUrl
+ * @param {object|null} discoveryResult — output from discoverSitemaps()
+ */
+export async function analyzeNewsSitemap(baseUrl, discoveryResult = null) {
   const startTime = Date.now();
   const result = {
     module: 'news_sitemap',
@@ -126,42 +133,61 @@ export async function analyzeNewsSitemap(baseUrl) {
     return result;
   }
 
-  // 1. Probe known sitemap paths
-  const probeResults = await Promise.allSettled(
-    SITEMAP_PATHS.map(async (path) => {
-      const url = origin + path;
-      try {
-        const res = await fetchWithTimeout(url);
-        if (res.ok) {
-          const text = await res.text();
-          return { url, text, status: res.status };
-        }
-        return { url, text: null, status: res.status };
-      } catch (err) {
-        return { url, text: null, status: 0, error: err.message };
-      }
-    }),
-  );
+  // ── Gather raw sitemaps ────────────────────────────────────────
+  let foundSitemaps = [];
 
-  const foundSitemaps = [];
-  for (const r of probeResults) {
-    if (r.status === 'fulfilled' && r.value.text) {
-      foundSitemaps.push(r.value);
-      result.sitemaps_found.push(r.value.url);
+  if (discoveryResult) {
+    // Use pre-discovered sitemaps (avoid duplicate network requests)
+    foundSitemaps = discoveryResult.sitemaps
+      .filter(s => s.classification === 'FOUND' && s.content)
+      .map(s => ({ url: s.url, text: s.content, status: 200 }));
+    result.sitemaps_found = foundSitemaps.map(s => s.url);
+  } else {
+    // Legacy path: probe standard paths when no discovery data available
+    const probeResults = await Promise.allSettled(
+      SITEMAP_PATHS.map(async (path) => {
+        const url = origin + path;
+        try {
+          const res = await fetchWithTimeout(url);
+          if (res.ok) {
+            const text = await res.text();
+            return { url, text, status: res.status };
+          }
+          return { url, text: null, status: res.status };
+        } catch (err) {
+          return { url, text: null, status: 0, error: err.message };
+        }
+      }),
+    );
+
+    for (const r of probeResults) {
+      if (r.status === 'fulfilled' && r.value.text) {
+        foundSitemaps.push(r.value);
+        result.sitemaps_found.push(r.value.url);
+      }
     }
   }
 
+  // No sitemaps → WARNING (never hard FAIL for "missing")
   if (foundSitemaps.length === 0) {
-    result.status = 'FAIL';
-    result.issues.push({
-      level: 'critical',
-      message: 'No sitemap found at any standard path',
-    });
+    if (discoveryResult?.rssFeeds?.length > 0) {
+      result.status = 'WARNING';
+      result.issues.push({
+        level: 'medium',
+        message: 'No sitemap found but RSS/Atom feed detected — consider using RSS for freshness signals',
+      });
+    } else {
+      result.status = 'WARNING';
+      result.issues.push({
+        level: 'high',
+        message: 'No sitemap discovered via any strategy. Add Sitemap: lines to robots.txt or create a sitemap.xml.',
+      });
+    }
     result.details.duration_ms = Date.now() - startTime;
     return result;
   }
 
-  // 2. Process each found sitemap
+  // ── Process each found sitemap ─────────────────────────────────
   const allNewsUrls = [];
   let sitemapsParsed = 0;
   const queue = [...foundSitemaps];
@@ -172,23 +198,31 @@ export async function analyzeNewsSitemap(baseUrl) {
 
     const xml = item.text;
 
-    // Check if this is a sitemap index
+    // Handle sitemap index
     if (isSitemapIndex(xml)) {
       const entries = parseSitemapIndexEntries(xml);
       result.sitemap_index = {
         url: item.url,
         child_sitemaps: entries.length,
-        entries: entries.slice(0, 50), // cap output size
+        entries: entries.slice(0, 50),
       };
 
-      // Enqueue child sitemaps (only news-related or all if few)
       for (const entry of entries) {
         if (!entry.loc) continue;
         if (sitemapsParsed + queue.length >= MAX_SITEMAPS_TO_PARSE) break;
 
-        // Prioritize news-looking sitemaps
         const isNewsLike = /news/i.test(entry.loc);
         if (isNewsLike || entries.length <= 5) {
+          // Check if already in discovery data
+          if (discoveryResult) {
+            const existing = discoveryResult.sitemaps.find(
+              s => s.url === entry.loc && s.classification === 'FOUND' && s.content,
+            );
+            if (existing) {
+              queue.push({ url: existing.url, text: existing.content });
+              continue;
+            }
+          }
           try {
             const res = await fetchWithTimeout(entry.loc);
             if (res.ok) {
@@ -200,7 +234,7 @@ export async function analyzeNewsSitemap(baseUrl) {
       continue;
     }
 
-    // Parse as regular or news sitemap
+    // Parse regular or news sitemap
     const urls = parseSitemapUrls(xml);
     const isNews = isNewsSitemap(xml);
     result.total_urls += urls.length;
@@ -212,7 +246,6 @@ export async function analyzeNewsSitemap(baseUrl) {
         is_news: true,
       });
 
-      // Validate news sitemap constraints
       if (urls.length > MAX_NEWS_URLS) {
         result.issues.push({
           level: 'high',
@@ -238,22 +271,9 @@ export async function analyzeNewsSitemap(baseUrl) {
         }
       }
     } else {
-      // Regular sitemap — check lastmod freshness
-      let freshCount = 0;
-      let staleCount = 0;
       let missingLastmod = 0;
-
       for (const u of urls) {
-        if (!u.lastmod) {
-          missingLastmod++;
-          continue;
-        }
-        const hoursAgo = parseHoursAgo(u.lastmod);
-        if (hoursAgo !== null && hoursAgo <= NEWS_FRESHNESS_HOURS) {
-          freshCount++;
-        } else {
-          staleCount++;
-        }
+        if (!u.lastmod) missingLastmod++;
       }
 
       if (missingLastmod > urls.length * 0.5) {
@@ -267,7 +287,7 @@ export async function analyzeNewsSitemap(baseUrl) {
 
   result.news_urls = allNewsUrls.length;
 
-  // 3. Calculate freshness score for news URLs
+  // ── Calculate freshness score ──────────────────────────────────
   if (allNewsUrls.length > 0) {
     let freshCount = 0;
     for (const u of allNewsUrls) {
@@ -281,7 +301,7 @@ export async function analyzeNewsSitemap(baseUrl) {
     result.freshness_score = Math.round((freshCount / allNewsUrls.length) * 100);
   }
 
-  // 4. Determine status
+  // ── Determine status ──────────────────────────────────────────
   const criticalIssues = result.issues.filter(i => i.level === 'critical').length;
   const highIssues = result.issues.filter(i => i.level === 'high').length;
 
@@ -289,7 +309,7 @@ export async function analyzeNewsSitemap(baseUrl) {
   else if (highIssues > 0 || result.freshness_score < 30) result.status = 'WARNING';
   else result.status = 'PASS';
 
-  // Cap issues array to avoid bloated responses
+  // Cap issues
   if (result.issues.length > 50) {
     const total = result.issues.length;
     result.issues = result.issues.slice(0, 50);

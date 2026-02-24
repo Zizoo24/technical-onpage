@@ -7,6 +7,7 @@
  */
 import { Router } from 'express';
 import { analyzeTechnical, generateRecommendations } from '../lib/technical-checks.js';
+import { discoverSitemaps } from '../lib/modules/sitemap-discovery.js';
 import { analyzeNewsSitemap } from '../lib/modules/news-sitemap.js';
 import { analyzeArticleSchema } from '../lib/modules/article-schema.js';
 import { analyzeCanonicalConsistency } from '../lib/modules/canonical-consistency.js';
@@ -74,16 +75,87 @@ function buildIndexabilitySection(t) {
   return { id: 'indexability', title: 'Indexability & Crawl', tooltip: 'Whether search engines can find and index this page.', score, status: sectionStatus(score), checks };
 }
 
-function buildSitemapSection(t, newsModule) {
+function buildSitemapSection(t, newsModule, discoveryData) {
   const checks = [];
-  checks.push(ck('sitemap_xml', 'sitemap.xml', t.technical_seo.sitemap_xml_valid, 'high',
-    t.technical_seo.sitemap_xml_valid ? `Found at ${t.technical_seo.sitemap_xml_location}` : 'sitemap.xml missing or inaccessible',
-    t.technical_seo.sitemap_xml_valid ? null : 'Add a sitemap.xml to help search engines discover pages'));
 
+  if (discoveryData) {
+    // ── Discovery-based checks ─────────────────────────────────
+    const d = discoveryData;
+    const foundCount = d.finalSitemapCount || 0;
+
+    // Overall discovery result
+    const discoveryPass = foundCount > 0 ? true : d.rssFeeds?.length > 0 ? null : false;
+    const sources = [];
+    if (d.discovery.robotsFound.length > 0) sources.push('robots.txt');
+    if (d.discovery.htmlFound.length > 0) sources.push('HTML');
+    if (d.discovery.commonFound?.length > 0) sources.push('common paths');
+    if (d.discovery.overrideUrl) sources.push('manual override');
+
+    checks.push(ck('sitemap_discovery', 'Sitemap discovery', discoveryPass,
+      foundCount === 0 ? 'high' : 'medium',
+      foundCount > 0
+        ? `${foundCount} valid sitemap(s) found via ${sources.join(', ') || 'probing'}`
+        : d.rssFeeds?.length > 0
+          ? 'No sitemap XML found, but RSS/Atom feed detected'
+          : 'No sitemap discovered via any strategy',
+      foundCount === 0 ? d.recommendation : null));
+
+    // robots.txt Sitemap directives
+    if (d.discovery.robotsFound.length > 0) {
+      checks.push(ck('robots_sitemaps', 'robots.txt Sitemap directives', true, 'medium',
+        `${d.discovery.robotsFound.length} Sitemap: line(s) in robots.txt`, null));
+    } else if (d.discovery.robotsStatus === 'blocked') {
+      checks.push(ck('robots_sitemaps', 'robots.txt access', null, 'high',
+        'robots.txt returned 401/403 — cannot read Sitemap directives',
+        'Ensure robots.txt is accessible to crawlers'));
+    } else if (d.discovery.robotsStatus === 'no_sitemaps') {
+      checks.push(ck('robots_sitemaps', 'robots.txt Sitemap directives', null, 'medium',
+        'robots.txt exists but contains no Sitemap: lines',
+        'Add Sitemap: directives to robots.txt for reliable discovery'));
+    }
+
+    // HTML-discovered sitemaps
+    if (d.discovery.htmlFound.length > 0) {
+      checks.push(ck('html_sitemaps', 'HTML sitemap links', true, 'low',
+        `${d.discovery.htmlFound.length} sitemap URL(s) found in page HTML`, null));
+    }
+
+    // Blocked sitemaps
+    const blocked = (d.sitemaps || []).filter(s => s.classification === 'BLOCKED');
+    if (blocked.length > 0) {
+      checks.push(ck('sitemap_blocked', 'Blocked sitemaps', false, 'high',
+        `${blocked.length} sitemap URL(s) returned 401/403: ${blocked.map(s => s.url).slice(0, 2).join(', ')}`,
+        'Ensure sitemaps are publicly accessible'));
+    }
+
+    // Soft-404 sitemaps
+    const soft404 = (d.sitemaps || []).filter(s => s.classification === 'SOFT_404');
+    if (soft404.length > 0) {
+      checks.push(ck('sitemap_soft404', 'Soft-404 sitemaps', false, 'medium',
+        `${soft404.length} URL(s) return HTTP 200 but serve HTML instead of sitemap XML`,
+        'Ensure sitemap URLs serve valid XML content'));
+    }
+
+    // RSS fallback
+    if (foundCount === 0 && d.rssFeeds?.length > 0) {
+      checks.push(ck('rss_fallback', 'RSS/Atom feed available', null, 'medium',
+        `${d.rssFeeds.length} RSS/Atom feed(s) found as alternative: ${d.rssFeeds.slice(0, 2).join(', ')}`,
+        'RSS feeds provide freshness signals but a proper sitemap is recommended'));
+    }
+  } else {
+    // Fallback: legacy single-path check
+    checks.push(ck('sitemap_xml', 'sitemap.xml', t.technical_seo.sitemap_xml_valid, 'high',
+      t.technical_seo.sitemap_xml_valid ? `Found at ${t.technical_seo.sitemap_xml_location}` : 'sitemap.xml missing or inaccessible',
+      t.technical_seo.sitemap_xml_valid ? null : 'Add a sitemap.xml to help search engines discover pages'));
+  }
+
+  // ── News-specific checks ─────────────────────────────────────
   if (newsModule) {
     const n = newsModule;
     checks.push(ck('news_sitemap_found', 'News sitemap discovery', n.news_sitemaps?.length > 0, 'high',
-      n.sitemaps_found?.length > 0 ? `${n.sitemaps_found.length} sitemap(s) probed, ${n.news_sitemaps?.length || 0} are news-specific` : 'No sitemaps discovered',
+      n.sitemaps_found?.length > 0
+        ? `${n.sitemaps_found.length} sitemap(s) analyzed, ${n.news_sitemaps?.length || 0} are news-specific`
+        : 'No news sitemaps discovered',
       n.news_sitemaps?.length > 0 ? null : 'Add a Google News sitemap for news content'));
     checks.push(ck('news_freshness', 'News URL freshness (48 h)', n.freshness_score >= 50, 'high',
       `${n.freshness_score}% of news URLs are within the 48-hour window`,
@@ -94,7 +166,23 @@ function buildSitemapSection(t, newsModule) {
   }
 
   const score = sectionScore(checks);
-  return { id: 'sitemaps', title: 'Sitemaps', tooltip: 'Sitemap presence and Google News compliance.', score, status: sectionStatus(score), checks };
+  return {
+    id: 'sitemaps',
+    title: 'Sitemaps',
+    tooltip: 'Multi-strategy sitemap discovery, classification, and Google News compliance.',
+    score,
+    status: sectionStatus(score),
+    checks,
+    ...(discoveryData ? {
+      meta: {
+        robotsFound: discoveryData.discovery.robotsFound.length,
+        htmlFound: discoveryData.discovery.htmlFound.length,
+        commonTried: discoveryData.discovery.commonTried,
+        rssFound: discoveryData.rssFeeds?.length || 0,
+        finalSitemaps: discoveryData.finalSitemapCount || 0,
+      },
+    } : {}),
+  };
 }
 
 function buildCanonicalSection(t, canonicalModule) {
@@ -507,7 +595,7 @@ function riskLevel(score) {
   return 'Critical';
 }
 
-function computeEligibility(technical, newsModules, html) {
+function computeEligibility(technical, newsModules, html, discoveryData) {
   // ── News sub-factors ───────────────────────────────────────────
 
   // 1. Schema score (weight 0.25)
@@ -538,12 +626,13 @@ function computeEligibility(technical, newsModules, html) {
     freshnessScore = cat === 'fresh' ? 100 : cat === 'recent' ? 80 : cat === 'aging' ? 40 : cat === 'stale' ? 10 : 30;
   }
 
-  // 3. Sitemap score (weight 0.15)
+  // 3. Sitemap score (weight 0.15) — enhanced with discovery data
   let sitemapPoints = 0;
   const sitemapMax = 100;
-  if (technical.technical_seo.sitemap_xml_valid)    sitemapPoints += 30;
-  if (nm?.news_sitemaps?.length > 0)                sitemapPoints += 50;
-  if (nm?.total_news_urls > 0)                      sitemapPoints += 20;
+  if (discoveryData?.finalSitemapCount > 0)          sitemapPoints += 30;
+  else if (technical.technical_seo.sitemap_xml_valid) sitemapPoints += 30;
+  if (nm?.news_sitemaps?.length > 0)                 sitemapPoints += 50;
+  if (nm?.total_news_urls > 0)                       sitemapPoints += 20;
   const sitemapScore = computeSubScore(sitemapPoints, sitemapMax);
 
   // 4. Crawl health score (weight 0.15)
@@ -716,7 +805,7 @@ function computeEligibility(technical, newsModules, html) {
 unifiedAuditRouter.post('/', async (req, res) => {
   const startTime = Date.now();
   try {
-    const { url, mode = 'technical' } = req.body || {};
+    const { url, mode = 'technical', sitemapOverrideUrl = null } = req.body || {};
     if (!url) {
       return res.status(400).json({ url: '', mode, status: 'error', error: 'URL is required', summary: {}, sections: [] });
     }
@@ -758,12 +847,25 @@ unifiedAuditRouter.post('/', async (req, res) => {
     const technical = await analyzeTechnical(html, url);
     technical.recommendations = generateRecommendations(technical);
 
-    // 3. Run news modules in parallel (only in news mode)
+    // 3. Run multi-strategy sitemap discovery (both modes)
+    let discoveryData = null;
+    try {
+      discoveryData = await discoverSitemaps(url, html, sitemapOverrideUrl || null);
+      // Override basic sitemap check with comprehensive discovery results
+      if (discoveryData.finalSitemapCount > 0) {
+        technical.technical_seo.sitemap_xml_valid = true;
+        technical.technical_seo.sitemap_xml_location = discoveryData.finalSitemaps[0];
+      }
+    } catch (err) {
+      console.error('sitemap-discovery error:', err);
+    }
+
+    // 4. Run news modules in parallel (only in news mode)
     let newsModules = {};
     let migrationData = null;
     if (mode === 'news') {
       const settled = await Promise.allSettled([
-        analyzeNewsSitemap(url),
+        analyzeNewsSitemap(url, discoveryData),
         Promise.resolve(analyzeArticleSchema(html, url)),
         analyzeCanonicalConsistency(html, url),
         analyzeCoreWebVitals(html, url),
@@ -778,19 +880,19 @@ unifiedAuditRouter.post('/', async (req, res) => {
       migrationData = newsModules.migration;
     }
 
-    // 4. Build sections
+    // 5. Build sections
     const sections = [];
 
     // Eligibility scoring (news mode) — placed first for prominence
     let eligibilityData = null;
     if (mode === 'news') {
-      const elig = computeEligibility(technical, newsModules, html);
+      const elig = computeEligibility(technical, newsModules, html, discoveryData);
       eligibilityData = elig.eligibility;
       sections.push(elig.section);
     }
 
     sections.push(buildIndexabilitySection(technical));
-    sections.push(buildSitemapSection(technical, newsModules.news_sitemap));
+    sections.push(buildSitemapSection(technical, newsModules.news_sitemap, discoveryData));
     sections.push(buildCanonicalSection(technical, newsModules.canonical_consistency));
     sections.push(buildStructuredDataSection(technical, newsModules.article_schema));
     sections.push(buildPerformanceSection(technical, newsModules.core_web_vitals));
@@ -816,7 +918,7 @@ unifiedAuditRouter.post('/', async (req, res) => {
     sections.push(buildContentSection(technical));
     sections.push(buildLinksSection(technical));
 
-    // 5. Summary
+    // 6. Summary
     let pass = 0, warning = 0, fail = 0;
     for (const s of sections) {
       for (const c of s.checks) {
@@ -828,12 +930,24 @@ unifiedAuditRouter.post('/', async (req, res) => {
     const totalChecks = pass + warning + fail;
     const overallScore = totalChecks > 0 ? Math.round(((pass + warning * 0.5) / totalChecks) * 100) : 0;
 
+    // Build sitemap discovery summary for frontend
+    const sitemapDiscovery = discoveryData ? {
+      robotsFound: discoveryData.discovery.robotsFound.length,
+      htmlFound: discoveryData.discovery.htmlFound.length,
+      commonTried: discoveryData.discovery.commonTried,
+      rssFound: discoveryData.rssFeeds?.length || 0,
+      finalSitemaps: discoveryData.finalSitemapCount || 0,
+      status: discoveryData.status,
+      recommendation: discoveryData.recommendation,
+    } : null;
+
     return res.json({
       url,
       mode,
       status: fail > 0 ? 'FAIL' : warning > 0 ? 'WARNING' : 'PASS',
       summary: { score: overallScore, pass, warning, fail, duration_ms: Date.now() - startTime },
       ...(eligibilityData ? { eligibility: eligibilityData } : {}),
+      ...(sitemapDiscovery ? { sitemapDiscovery } : {}),
       sections,
     });
   } catch (error) {

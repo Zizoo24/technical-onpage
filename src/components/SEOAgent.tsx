@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Search, AlertCircle, CheckCircle, Loader2, ChevronDown, ChevronRight,
-  Info, AlertTriangle, XCircle, Newspaper,
+  Info, AlertTriangle, XCircle, Newspaper, MapPin,
 } from 'lucide-react';
 
 /* ── Types ─────────────────────────────────────────────────────── */
@@ -15,6 +15,14 @@ interface Check {
   recommendation: string | null;
 }
 
+interface SectionMeta {
+  robotsFound?: number;
+  htmlFound?: number;
+  commonTried?: number;
+  rssFound?: number;
+  finalSitemaps?: number;
+}
+
 interface Section {
   id: string;
   title: string;
@@ -22,6 +30,7 @@ interface Section {
   score: number;
   status: 'PASS' | 'WARNING' | 'FAIL';
   checks: Check[];
+  meta?: SectionMeta;
 }
 
 interface Eligibility {
@@ -32,6 +41,16 @@ interface Eligibility {
     news: Record<string, number>;
     discover: Record<string, number>;
   };
+}
+
+interface SitemapDiscovery {
+  robotsFound: number;
+  htmlFound: number;
+  commonTried: number;
+  rssFound: number;
+  finalSitemaps: number;
+  status: string;
+  recommendation: string | null;
 }
 
 interface AuditResult {
@@ -46,6 +65,7 @@ interface AuditResult {
     duration_ms: number;
   };
   eligibility?: Eligibility;
+  sitemapDiscovery?: SitemapDiscovery;
   sections: Section[];
   error?: string;
 }
@@ -88,14 +108,54 @@ function Tooltip({ text }: { text: string }) {
   );
 }
 
+/* ── Discovery Summary (inside sitemaps section) ─────────────── */
+
+function DiscoverySummary({ meta }: { meta: SectionMeta }) {
+  const stats = [
+    { label: 'robots.txt', value: meta.robotsFound ?? 0, color: 'text-blue-600' },
+    { label: 'HTML', value: meta.htmlFound ?? 0, color: 'text-indigo-600' },
+    { label: 'Paths tried', value: meta.commonTried ?? 0, color: 'text-slate-600' },
+    { label: 'RSS/Atom', value: meta.rssFound ?? 0, color: 'text-orange-600' },
+    { label: 'Final sitemaps', value: meta.finalSitemaps ?? 0, color: 'text-green-600' },
+  ];
+
+  return (
+    <div className="px-6 py-3 bg-slate-50 border-b border-slate-100">
+      <div className="flex items-center gap-2 mb-2">
+        <MapPin className="w-3.5 h-3.5 text-slate-500" />
+        <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Discovery Summary</span>
+      </div>
+      <div className="flex flex-wrap gap-4">
+        {stats.map((s) => (
+          <div key={s.label} className="flex items-center gap-1.5 text-xs">
+            <span className="text-slate-500">{s.label}:</span>
+            <span className={`font-semibold ${s.color}`}>{s.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ── Section card (collapsible) ────────────────────────────────── */
 
-function SectionCard({ section }: { section: Section }) {
+function SectionCard({ section, sitemapDiscovery, onOverrideSubmit }: {
+  section: Section;
+  sitemapDiscovery?: SitemapDiscovery | null;
+  onOverrideSubmit?: (overrideUrl: string) => void;
+}) {
   const [open, setOpen] = useState(section.status !== 'PASS');
+  const [overrideUrl, setOverrideUrl] = useState('');
 
   const passCount = section.checks.filter(c => c.status === 'PASS').length;
   const warnCount = section.checks.filter(c => c.status === 'WARNING').length;
   const failCount = section.checks.filter(c => c.status === 'FAIL').length;
+
+  const showDiscoverySummary = section.id === 'sitemaps' && section.meta;
+  const showOverrideInput = section.id === 'sitemaps'
+    && sitemapDiscovery
+    && sitemapDiscovery.finalSitemaps === 0
+    && onOverrideSubmit;
 
   return (
     <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
@@ -124,32 +184,62 @@ function SectionCard({ section }: { section: Section }) {
       </button>
 
       {open && (
-        <div className="border-t border-slate-100 divide-y divide-slate-50">
-          {section.checks.map((check, i) => (
-            <div key={`${check.id}-${i}`} className="px-6 py-3 flex items-start gap-3">
-              <div className="mt-0.5 flex-shrink-0">
-                {check.status === 'PASS' && <CheckCircle className="w-4 h-4 text-green-500" />}
-                {check.status === 'WARNING' && <AlertTriangle className="w-4 h-4 text-amber-500" />}
-                {check.status === 'FAIL' && <XCircle className="w-4 h-4 text-red-500" />}
+        <>
+          {/* Discovery Summary (sitemaps section only) */}
+          {showDiscoverySummary && <DiscoverySummary meta={section.meta!} />}
+
+          <div className="border-t border-slate-100 divide-y divide-slate-50">
+            {section.checks.map((check, i) => (
+              <div key={`${check.id}-${i}`} className="px-6 py-3 flex items-start gap-3">
+                <div className="mt-0.5 flex-shrink-0">
+                  {check.status === 'PASS' && <CheckCircle className="w-4 h-4 text-green-500" />}
+                  {check.status === 'WARNING' && <AlertTriangle className="w-4 h-4 text-amber-500" />}
+                  {check.status === 'FAIL' && <XCircle className="w-4 h-4 text-red-500" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-slate-800">{check.title}</p>
+                  {check.evidence && <p className="text-xs text-slate-500 mt-0.5">{check.evidence}</p>}
+                  {check.recommendation && (
+                    <p className="text-xs text-blue-600 mt-0.5">{check.recommendation}</p>
+                  )}
+                </div>
+                <div className="flex-shrink-0">
+                  <span className={`text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                    check.severity === 'critical' ? 'bg-red-50 text-red-600' :
+                    check.severity === 'high' ? 'bg-orange-50 text-orange-600' :
+                    check.severity === 'medium' ? 'bg-yellow-50 text-yellow-700' :
+                    'bg-slate-50 text-slate-500'
+                  }`}>{check.severity}</span>
+                </div>
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-800">{check.title}</p>
-                {check.evidence && <p className="text-xs text-slate-500 mt-0.5">{check.evidence}</p>}
-                {check.recommendation && (
-                  <p className="text-xs text-blue-600 mt-0.5">{check.recommendation}</p>
-                )}
-              </div>
-              <div className="flex-shrink-0">
-                <span className={`text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded ${
-                  check.severity === 'critical' ? 'bg-red-50 text-red-600' :
-                  check.severity === 'high' ? 'bg-orange-50 text-orange-600' :
-                  check.severity === 'medium' ? 'bg-yellow-50 text-yellow-700' :
-                  'bg-slate-50 text-slate-500'
-                }`}>{check.severity}</span>
+            ))}
+          </div>
+
+          {/* Sitemap URL Override (when no sitemaps found) */}
+          {showOverrideInput && (
+            <div className="border-t border-slate-100 px-6 py-4 bg-amber-50">
+              <p className="text-xs font-medium text-amber-800 mb-2">
+                No sitemaps were automatically discovered. Provide a sitemap URL to re-scan:
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={overrideUrl}
+                  onChange={(e) => setOverrideUrl(e.target.value)}
+                  placeholder="https://example.com/sitemap.xml"
+                  className="flex-1 px-3 py-2 text-sm border border-amber-300 rounded-lg focus:ring-2 focus:ring-amber-400 focus:border-transparent outline-none bg-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => { if (overrideUrl.trim()) onOverrideSubmit!(overrideUrl.trim()); }}
+                  className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors"
+                >
+                  Re-scan
+                </button>
               </div>
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -247,8 +337,8 @@ export default function SEOAgent() {
   const [result, setResult] = useState<AuditResult | null>(null);
   const [error, setError] = useState('');
 
-  const runAudit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const runAudit = async (e: React.FormEvent | null, overrideUrl?: string) => {
+    if (e) e.preventDefault();
     if (!url.trim()) { setError('Please enter a valid URL'); return; }
 
     setLoading(true);
@@ -259,10 +349,16 @@ export default function SEOAgent() {
       const apiBase = import.meta.env.VITE_API_BASE_URL || '';
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 90_000);
+      const body: Record<string, string> = {
+        url: url.trim(),
+        mode: newsMode ? 'news' : 'technical',
+      };
+      if (overrideUrl) body.sitemapOverrideUrl = overrideUrl;
+
       const response = await fetch(`${apiBase}/api/unified-audit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim(), mode: newsMode ? 'news' : 'technical' }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
       clearTimeout(timer);
@@ -283,6 +379,10 @@ export default function SEOAgent() {
     }
   };
 
+  const handleOverrideSubmit = (overrideUrl: string) => {
+    runAudit(null, overrideUrl);
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-6xl mx-auto px-4 py-12">
@@ -301,7 +401,7 @@ export default function SEOAgent() {
 
         {/* Form */}
         <div className="bg-white rounded-2xl shadow-lg p-8 mb-8">
-          <form onSubmit={runAudit} className="space-y-4">
+          <form onSubmit={(e) => runAudit(e)} className="space-y-4">
             <div>
               <label htmlFor="url" className="block text-sm font-medium text-slate-700 mb-2">
                 Enter URL to Analyze
@@ -404,7 +504,12 @@ export default function SEOAgent() {
 
             {/* Section cards */}
             {result.sections.map((section) => (
-              <SectionCard key={section.id} section={section} />
+              <SectionCard
+                key={section.id}
+                section={section}
+                sitemapDiscovery={section.id === 'sitemaps' ? result.sitemapDiscovery : undefined}
+                onOverrideSubmit={section.id === 'sitemaps' ? handleOverrideSubmit : undefined}
+              />
             ))}
 
             {/* Raw JSON toggle */}

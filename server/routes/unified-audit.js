@@ -494,6 +494,223 @@ function buildDuplicateProtectionSection(t, url) {
   return { id: 'duplicate_protection', title: 'Duplicate URL Protection', tooltip: 'Canonical self-reference, trailing slash consistency, tracking params, and AMP duplicates.', score, status: sectionStatus(score), checks };
 }
 
+// ── News & Discover Eligibility Scoring Engine ─────────────────
+
+function computeSubScore(points, max) {
+  return Math.min(100, Math.max(0, Math.round((points / max) * 100)));
+}
+
+function riskLevel(score) {
+  if (score >= 85) return 'Low';
+  if (score >= 70) return 'Moderate';
+  if (score >= 50) return 'High';
+  return 'Critical';
+}
+
+function computeEligibility(technical, newsModules, html) {
+  // ── News sub-factors ───────────────────────────────────────────
+
+  // 1. Schema score (weight 0.25)
+  let schemaPoints = 0;
+  const schemaMax = 100;
+  const sm = newsModules.article_schema;
+  if (sm?.article_schemas?.length > 0) {
+    schemaPoints += 40;
+    const s = sm.article_schemas[0];
+    const missing = new Set([...(s.missing_required || []), ...(s.missing_recommended || [])]);
+    if (!missing.has('headline'))         schemaPoints += 10;
+    if (!missing.has('datePublished'))     schemaPoints += 15;
+    if (!missing.has('dateModified'))      schemaPoints += 10;
+    if (!missing.has('author'))            schemaPoints += 10;
+    if (!missing.has('image'))             schemaPoints += 10;
+    if (!missing.has('mainEntityOfPage'))  schemaPoints += 5;
+  }
+  const schemaScore = computeSubScore(schemaPoints, schemaMax);
+
+  // 2. Freshness score (weight 0.30)
+  let freshnessScore = 30; // default unknown
+  const nm = newsModules.news_sitemap;
+  const fm = newsModules.freshness;
+  if (nm?.freshness_score != null) {
+    freshnessScore = nm.freshness_score >= 80 ? 100 : nm.freshness_score >= 60 ? 70 : nm.freshness_score >= 30 ? 40 : 15;
+  } else if (fm?.freshness_category) {
+    const cat = fm.freshness_category;
+    freshnessScore = cat === 'fresh' ? 100 : cat === 'recent' ? 80 : cat === 'aging' ? 40 : cat === 'stale' ? 10 : 30;
+  }
+
+  // 3. Sitemap score (weight 0.15)
+  let sitemapPoints = 0;
+  const sitemapMax = 100;
+  if (technical.technical_seo.sitemap_xml_valid)    sitemapPoints += 30;
+  if (nm?.news_sitemaps?.length > 0)                sitemapPoints += 50;
+  if (nm?.total_news_urls > 0)                      sitemapPoints += 20;
+  const sitemapScore = computeSubScore(sitemapPoints, sitemapMax);
+
+  // 4. Crawl health score (weight 0.15)
+  let crawlPoints = 0;
+  const crawlMax = 100;
+  if (technical.technical_seo.robots_txt_valid)      crawlPoints += 25;
+  if (!technical.technical_seo.noindex)               crawlPoints += 30;
+  if (!technical.technical_seo.nofollow)              crawlPoints += 15;
+  if (technical.technical_seo.redirect_chain.length <= 2) crawlPoints += 15;
+  if (technical.meta.language)                        crawlPoints += 15;
+  const crawlScore = computeSubScore(crawlPoints, crawlMax);
+
+  // 5. Canonical score (weight 0.15)
+  let canonPoints = 0;
+  const canonMax = 100;
+  if (technical.technical_seo.canonical_url)          canonPoints += 40;
+  if (!technical.technical_seo.canonical_conflict)    canonPoints += 30;
+  const cm = newsModules.canonical_consistency;
+  if (cm?.canonical?.resolves_to_200 !== false)       canonPoints += 30;
+  const canonScore = computeSubScore(canonPoints, canonMax);
+
+  // ── URL structure bonus (part of crawl health) ─────────────────
+  let urlClean = true;
+  try {
+    const parsed = new URL(technical.url || '');
+    if (parsed.search.length > 50) urlClean = false;
+    if (/[;&]jsessionid=/i.test(parsed.href)) urlClean = false;
+  } catch { /* ignore */ }
+
+  const newsScore = Math.round(
+    (schemaScore * 0.25) +
+    (freshnessScore * 0.30) +
+    (sitemapScore * 0.15) +
+    (crawlScore * 0.15) +
+    (canonScore * 0.15)
+  );
+
+  // ── Discover sub-factors ───────────────────────────────────────
+
+  // 1. Mobile score (weight 0.30)
+  let mobilePoints = 0;
+  const mobileMax = 100;
+  if (technical.performance.viewport_meta)            mobilePoints += 40;
+  if (technical.performance.mobile_friendly)          mobilePoints += 40;
+  // Check for interstitial (popup/overlay patterns)
+  const hasInterstitial = /(?:popup|modal|overlay|interstitial|cookie-?wall)[\s\S]{0,200}(?:display\s*:\s*(?:block|flex)|visible|opacity\s*:\s*1)/i.test(html);
+  if (!hasInterstitial)                               mobilePoints += 20;
+  const mobileScore = computeSubScore(mobilePoints, mobileMax);
+
+  // 2. Image score (weight 0.25)
+  let imagePoints = 0;
+  const imageMax = 100;
+  // OG image
+  const ogImage = /<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i.exec(html)
+    || /<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i.exec(html);
+  if (ogImage) imagePoints += 30;
+  // max-image-preview
+  const maxImgPreview = /max-image-preview\s*:\s*large/i.test(html);
+  if (maxImgPreview) imagePoints += 35;
+  // Large image detection (width >= 1200 in any <img> or og:image:width)
+  const ogWidth = /<meta[^>]*(?:property=["']og:image:width["'][^>]*content=["'](\d+)["']|content=["'](\d+)["'][^>]*property=["']og:image:width["'])/i.exec(html);
+  const hasLargeWidth = (ogWidth && parseInt(ogWidth[1] || ogWidth[2]) >= 1200)
+    || /width=["']?(\d{4,})["']?/i.test(html); // any image with 4+ digit width
+  if (hasLargeWidth || ogImage) imagePoints += 35; // credit if OG image present (assumed adequate)
+  const imageScore = computeSubScore(imagePoints, imageMax);
+
+  // 3. Core Web Vitals score (weight 0.30)
+  let cwvPoints = 0;
+  const cwvMax = 100;
+  const vm = newsModules.core_web_vitals;
+  if (vm) {
+    if (vm.lcp?.score === 'good') cwvPoints += 35;
+    else if (vm.lcp?.score === 'needs-improvement') cwvPoints += 15;
+    if (vm.cls?.score === 'good') cwvPoints += 35;
+    else if (vm.cls?.score === 'needs-improvement') cwvPoints += 15;
+    if (vm.inp?.score === 'good') cwvPoints += 30;
+    else if (vm.inp?.score === 'needs-improvement') cwvPoints += 10;
+  } else {
+    // Fallback to technical estimates
+    const p = technical.performance;
+    if (p.estimated_lcp === 'good') cwvPoints += 35;
+    else if (p.estimated_lcp !== 'poor') cwvPoints += 15;
+    if (p.estimated_cls_risk === 'low') cwvPoints += 35;
+    else if (p.estimated_cls_risk !== 'high') cwvPoints += 15;
+    if (p.estimated_inp_risk === 'low') cwvPoints += 30;
+    else if (p.estimated_inp_risk !== 'high') cwvPoints += 10;
+  }
+  const cwvScore = computeSubScore(cwvPoints, cwvMax);
+
+  // 4. Structured data score (weight 0.15)
+  let sdPoints = 0;
+  const sdMax = 100;
+  if (technical.technical_seo.structured_data.length > 0) sdPoints += 20;
+  if (technical.technical_seo.structured_data_valid)       sdPoints += 20;
+  if (sm?.article_schemas?.length > 0)                     sdPoints += 60;
+  const sdScore = computeSubScore(sdPoints, sdMax);
+
+  const discoverScore = Math.round(
+    (mobileScore * 0.30) +
+    (imageScore * 0.25) +
+    (cwvScore * 0.30) +
+    (sdScore * 0.15)
+  );
+
+  // ── Build checks for the section breakdown ─────────────────────
+  const checks = [];
+
+  // News sub-factor checks
+  checks.push(ck('news_schema_score', `Article Schema`, schemaScore >= 70 ? true : schemaScore >= 40 ? null : false, 'high',
+    `Schema score: ${schemaScore}/100 (weight 25%)`,
+    schemaScore < 70 ? 'Add complete NewsArticle schema with all required fields' : null));
+  checks.push(ck('news_freshness_score', `Content Freshness`, freshnessScore >= 70 ? true : freshnessScore >= 40 ? null : false, 'high',
+    `Freshness score: ${freshnessScore}/100 (weight 30%)`,
+    freshnessScore < 70 ? 'Publish fresh content and keep news sitemap URLs within 48 hours' : null));
+  checks.push(ck('news_sitemap_score', `News Sitemap`, sitemapScore >= 70 ? true : sitemapScore >= 30 ? null : false, 'medium',
+    `Sitemap score: ${sitemapScore}/100 (weight 15%)`,
+    sitemapScore < 70 ? 'Add a Google News sitemap with valid <news:news> entries' : null));
+  checks.push(ck('news_crawl_score', `Crawl Health`, crawlScore >= 70 ? true : crawlScore >= 40 ? null : false, 'medium',
+    `Crawl health: ${crawlScore}/100 (weight 15%)`,
+    crawlScore < 70 ? 'Ensure robots.txt allows indexing and no noindex directives are present' : null));
+  checks.push(ck('news_canonical_score', `Canonical Integrity`, canonScore >= 70 ? true : canonScore >= 40 ? null : false, 'high',
+    `Canonical score: ${canonScore}/100 (weight 15%)`,
+    canonScore < 70 ? 'Add a self-referencing canonical that resolves to HTTP 200' : null));
+  if (!urlClean) {
+    checks.push(ck('news_url_structure', 'URL Structure', false, 'medium',
+      'URL has excessive parameters or session IDs', 'Use clean, static, crawlable URLs'));
+  }
+
+  // Discover sub-factor checks
+  checks.push(ck('discover_mobile_score', `Mobile Optimization`, mobileScore >= 70 ? true : mobileScore >= 40 ? null : false, 'high',
+    `Mobile score: ${mobileScore}/100 (weight 30%)`,
+    mobileScore < 70 ? 'Add viewport meta, ensure responsive design, remove blocking interstitials' : null));
+  checks.push(ck('discover_image_score', `Large Image & OG`, imageScore >= 70 ? true : imageScore >= 40 ? null : false, 'high',
+    `Image score: ${imageScore}/100 (weight 25%)` +
+      (!ogImage ? ' — No og:image found' : '') +
+      (!maxImgPreview ? ' — Missing max-image-preview:large' : ''),
+    imageScore < 70 ? 'Add og:image (1200px+ width) and <meta name="robots" content="max-image-preview:large">' : null));
+  checks.push(ck('discover_cwv_score', `Core Web Vitals`, cwvScore >= 70 ? true : cwvScore >= 40 ? null : false, 'high',
+    `CWV score: ${cwvScore}/100 (weight 30%)`,
+    cwvScore < 70 ? 'Improve LCP (<2.5s), CLS (<0.1), and INP (<200ms)' : null));
+  checks.push(ck('discover_sd_score', `Structured Data`, sdScore >= 70 ? true : sdScore >= 40 ? null : false, 'medium',
+    `Structured data score: ${sdScore}/100 (weight 15%)`,
+    sdScore < 70 ? 'Add Article or NewsArticle JSON-LD structured data' : null));
+
+  const avgScore = Math.round((newsScore + discoverScore) / 2);
+
+  return {
+    eligibility: {
+      newsScore,
+      discoverScore,
+      riskLevel: riskLevel(avgScore),
+      breakdown: {
+        news: { schema: schemaScore, freshness: freshnessScore, sitemap: sitemapScore, crawl_health: crawlScore, canonical: canonScore },
+        discover: { mobile: mobileScore, image: imageScore, core_web_vitals: cwvScore, structured_data: sdScore },
+      },
+    },
+    section: {
+      id: 'eligibility',
+      title: 'News & Discover Eligibility',
+      tooltip: `Google News score: ${newsScore}/100, Google Discover score: ${discoverScore}/100. Risk: ${riskLevel(avgScore)}.`,
+      score: avgScore,
+      status: sectionStatus(avgScore),
+      checks,
+    },
+  };
+}
+
 // ── Route handler ───────────────────────────────────────────────
 
 unifiedAuditRouter.post('/', async (req, res) => {
@@ -563,6 +780,15 @@ unifiedAuditRouter.post('/', async (req, res) => {
 
     // 4. Build sections
     const sections = [];
+
+    // Eligibility scoring (news mode) — placed first for prominence
+    let eligibilityData = null;
+    if (mode === 'news') {
+      const elig = computeEligibility(technical, newsModules, html);
+      eligibilityData = elig.eligibility;
+      sections.push(elig.section);
+    }
+
     sections.push(buildIndexabilitySection(technical));
     sections.push(buildSitemapSection(technical, newsModules.news_sitemap));
     sections.push(buildCanonicalSection(technical, newsModules.canonical_consistency));
@@ -607,6 +833,7 @@ unifiedAuditRouter.post('/', async (req, res) => {
       mode,
       status: fail > 0 ? 'FAIL' : warning > 0 ? 'WARNING' : 'PASS',
       summary: { score: overallScore, pass, warning, fail, duration_ms: Date.now() - startTime },
+      ...(eligibilityData ? { eligibility: eligibilityData } : {}),
       sections,
     });
   } catch (error) {

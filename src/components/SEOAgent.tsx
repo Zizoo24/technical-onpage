@@ -21,12 +21,12 @@ export default function SEOAgent() {
     setAnalysis(null);
 
     try {
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/seo-intelligence`;
+      const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+      const apiUrl = `${apiBase}/api/seo-intelligence`;
 
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ url: url.trim() }),

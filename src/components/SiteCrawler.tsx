@@ -28,12 +28,12 @@ export default function SiteCrawler() {
     setResult(null);
 
     try {
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/seo-site-crawler`;
+      const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+      const apiUrl = `${apiBase}/api/seo-site-crawler`;
 
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ start_url: url.trim(), max_pages: maxPages }),

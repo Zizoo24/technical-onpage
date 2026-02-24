@@ -1,11 +1,85 @@
 import { useState } from 'react';
-import { Globe, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
+import { Globe, AlertCircle, CheckCircle, Loader2, AlertTriangle, Link2, Layers } from 'lucide-react';
+
+interface AnalysisModule {
+  module: string;
+  status: string;
+  score?: number;
+  issues?: Array<{ level: string; message: string }>;
+  [key: string]: unknown;
+}
 
 interface CrawlerResult {
   start_url: string;
   max_pages: number;
   total_pages_crawled: number;
   pages: any[];
+  summary?: {
+    errors: number;
+    blocked: number;
+    duplicates: number;
+    duration_ms: number;
+    robots_txt: string;
+  };
+  analysis?: {
+    internal_linking?: AnalysisModule;
+    crawl_depth?: AnalysisModule;
+    duplicate_protection?: AnalysisModule;
+  };
+}
+
+function StatusBadge({ status }: { status: string }) {
+  if (status === 'PASS') return <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-green-100 text-green-700">PASS</span>;
+  if (status === 'WARNING') return <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-700">WARNING</span>;
+  if (status === 'FAIL') return <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-red-100 text-red-700">FAIL</span>;
+  return null;
+}
+
+function AnalysisCard({ title, icon, data }: { title: string; icon: React.ReactNode; data: AnalysisModule }) {
+  return (
+    <div className="bg-white rounded-2xl shadow-lg p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          {icon}
+          <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
+        </div>
+        <StatusBadge status={data.status} />
+      </div>
+
+      {data.score !== undefined && (
+        <div className={`rounded-lg p-3 mb-4 text-center ${
+          data.score >= 80 ? 'bg-green-50' : data.score >= 50 ? 'bg-amber-50' : 'bg-red-50'
+        }`}>
+          <p className={`text-3xl font-bold ${
+            data.score >= 80 ? 'text-green-600' : data.score >= 50 ? 'text-amber-600' : 'text-red-600'
+          }`}>{data.score}/100</p>
+        </div>
+      )}
+
+      {data.issues && data.issues.length > 0 && (
+        <div className="space-y-1.5 max-h-48 overflow-y-auto">
+          {data.issues.slice(0, 10).map((issue, i) => (
+            <div key={i} className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs ${
+              issue.level === 'critical' ? 'bg-red-50' :
+              issue.level === 'high' ? 'bg-orange-50' :
+              issue.level === 'medium' ? 'bg-amber-50' : 'bg-slate-50'
+            }`}>
+              {issue.level === 'critical' || issue.level === 'high' ? (
+                <AlertTriangle className="w-3.5 h-3.5 text-orange-500 flex-shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
+              )}
+              <p className="text-slate-700">{issue.message}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(!data.issues || data.issues.length === 0) && (
+        <p className="text-sm text-green-600">No issues detected</p>
+      )}
+    </div>
+  );
 }
 
 export default function SiteCrawler() {
@@ -130,7 +204,7 @@ export default function SiteCrawler() {
                 <CheckCircle className="w-6 h-6 text-emerald-600" />
                 <h2 className="text-2xl font-bold text-slate-900">Crawl Complete</h2>
               </div>
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-3 gap-4 mb-4">
                 <div className="bg-emerald-50 rounded-lg p-4">
                   <p className="text-sm text-emerald-600 mb-1">Total Pages Crawled</p>
                   <p className="text-3xl font-bold text-emerald-900">{result.total_pages_crawled}</p>
@@ -142,11 +216,62 @@ export default function SiteCrawler() {
                 <div className="bg-cyan-50 rounded-lg p-4">
                   <p className="text-sm text-cyan-600 mb-1">Success Rate</p>
                   <p className="text-3xl font-bold text-cyan-900">
-                    {Math.round((result.pages.filter(p => p.status === 'success').length / result.total_pages_crawled) * 100)}%
+                    {result.total_pages_crawled > 0 ? Math.round((result.pages.filter(p => p.status === 'success').length / result.total_pages_crawled) * 100) : 0}%
                   </p>
                 </div>
               </div>
+              {result.summary && (
+                <div className="grid grid-cols-5 gap-2">
+                  <div className="bg-slate-50 rounded p-2 text-center">
+                    <p className="text-xs text-slate-500">Errors</p>
+                    <p className="text-lg font-bold text-slate-900">{result.summary.errors}</p>
+                  </div>
+                  <div className="bg-slate-50 rounded p-2 text-center">
+                    <p className="text-xs text-slate-500">Blocked</p>
+                    <p className="text-lg font-bold text-slate-900">{result.summary.blocked}</p>
+                  </div>
+                  <div className="bg-slate-50 rounded p-2 text-center">
+                    <p className="text-xs text-slate-500">Duplicates</p>
+                    <p className="text-lg font-bold text-slate-900">{result.summary.duplicates}</p>
+                  </div>
+                  <div className="bg-slate-50 rounded p-2 text-center">
+                    <p className="text-xs text-slate-500">Duration</p>
+                    <p className="text-lg font-bold text-slate-900">{(result.summary.duration_ms / 1000).toFixed(1)}s</p>
+                  </div>
+                  <div className="bg-slate-50 rounded p-2 text-center">
+                    <p className="text-xs text-slate-500">robots.txt</p>
+                    <p className="text-lg font-bold text-slate-900">{result.summary.robots_txt === 'found' ? 'Found' : 'N/A'}</p>
+                  </div>
+                </div>
+              )}
             </div>
+
+            {/* Post-crawl Analysis Modules */}
+            {result.analysis && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {result.analysis.internal_linking && (
+                  <AnalysisCard
+                    title="Internal Linking"
+                    icon={<Link2 className="w-5 h-5 text-emerald-600" />}
+                    data={result.analysis.internal_linking}
+                  />
+                )}
+                {result.analysis.crawl_depth && (
+                  <AnalysisCard
+                    title="Crawl Depth"
+                    icon={<Layers className="w-5 h-5 text-teal-600" />}
+                    data={result.analysis.crawl_depth}
+                  />
+                )}
+                {result.analysis.duplicate_protection && (
+                  <AnalysisCard
+                    title="Duplicate Protection"
+                    icon={<AlertTriangle className="w-5 h-5 text-cyan-600" />}
+                    data={result.analysis.duplicate_protection}
+                  />
+                )}
+              </div>
+            )}
 
             <div className="bg-white rounded-2xl shadow-lg p-6">
               <h3 className="text-lg font-semibold text-slate-900 mb-4">Crawled Pages</h3>
@@ -163,12 +288,11 @@ export default function SiteCrawler() {
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
                         <p className="text-sm font-medium text-slate-900 break-all">{page.url}</p>
-                        <p className="text-xs text-slate-600 mt-1">Status: {page.status}</p>
-                        {page.meta && (
-                          <p className="text-xs text-slate-600 mt-1">
-                            Title: {page.meta.title || 'N/A'} | Words: {page.meta.word_count}
-                          </p>
-                        )}
+                        <p className="text-xs text-slate-600 mt-1">
+                          Status: {page.status}
+                          {page.depth !== undefined && <> &middot; Depth: {page.depth}</>}
+                          {page.internal_links && <> &middot; Links: {page.internal_links.length}</>}
+                        </p>
                       </div>
                       <span
                         className={`ml-4 px-2 py-1 text-xs rounded-full ${

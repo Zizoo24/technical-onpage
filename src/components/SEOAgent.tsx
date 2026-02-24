@@ -24,6 +24,16 @@ interface Section {
   checks: Check[];
 }
 
+interface Eligibility {
+  newsScore: number;
+  discoverScore: number;
+  riskLevel: 'Low' | 'Moderate' | 'High' | 'Critical';
+  breakdown: {
+    news: Record<string, number>;
+    discover: Record<string, number>;
+  };
+}
+
 interface AuditResult {
   url: string;
   mode: string;
@@ -35,6 +45,7 @@ interface AuditResult {
     fail: number;
     duration_ms: number;
   };
+  eligibility?: Eligibility;
   sections: Section[];
   error?: string;
 }
@@ -138,6 +149,89 @@ function SectionCard({ section }: { section: Section }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Eligibility summary card ─────────────────────────────────── */
+
+const RISK_STYLES: Record<string, string> = {
+  Low: 'bg-green-100 text-green-800',
+  Moderate: 'bg-amber-100 text-amber-800',
+  High: 'bg-orange-100 text-orange-800',
+  Critical: 'bg-red-100 text-red-800',
+};
+
+function BreakdownBar({ label, value }: { label: string; value: number }) {
+  const color = value >= 70 ? 'bg-green-500' : value >= 40 ? 'bg-amber-500' : 'bg-red-500';
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="w-28 text-slate-600 truncate capitalize">{label.replace(/_/g, ' ')}</span>
+      <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${value}%` }} />
+      </div>
+      <span className="w-8 text-right font-medium text-slate-700">{value}</span>
+    </div>
+  );
+}
+
+function EligibilityCard({ eligibility }: { eligibility: Eligibility }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-4 px-6 py-5 text-left hover:bg-slate-50 transition-colors"
+      >
+        {open
+          ? <ChevronDown className="w-5 h-5 text-slate-400 flex-shrink-0" />
+          : <ChevronRight className="w-5 h-5 text-slate-400 flex-shrink-0" />}
+        <div className="flex-1 min-w-0">
+          <h3 className="text-base font-semibold text-slate-900">News &amp; Discover Eligibility</h3>
+          <p className="text-xs text-slate-500 mt-0.5">Weighted scoring for Google News and Google Discover surfaces</p>
+        </div>
+        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${RISK_STYLES[eligibility.riskLevel] || RISK_STYLES.Critical}`}>
+          {eligibility.riskLevel} Risk
+        </span>
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-100 px-6 py-5">
+          {/* Score rings row */}
+          <div className="grid grid-cols-2 gap-6 mb-6">
+            <div className="flex flex-col items-center gap-2">
+              <ScoreRing score={eligibility.newsScore} size={72} />
+              <span className="text-sm font-semibold text-slate-800">News Score</span>
+              <span className="text-[10px] text-slate-500">{eligibility.newsScore}/100</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <ScoreRing score={eligibility.discoverScore} size={72} />
+              <span className="text-sm font-semibold text-slate-800">Discover Score</span>
+              <span className="text-[10px] text-slate-500">{eligibility.discoverScore}/100</span>
+            </div>
+          </div>
+
+          {/* Breakdown bars */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4">
+            <div>
+              <p className="text-xs font-semibold text-slate-700 mb-2 uppercase tracking-wide">News Breakdown</p>
+              <div className="space-y-2">
+                {Object.entries(eligibility.breakdown.news).map(([k, v]) => (
+                  <BreakdownBar key={k} label={k} value={v} />
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-slate-700 mb-2 uppercase tracking-wide">Discover Breakdown</p>
+              <div className="space-y-2">
+                {Object.entries(eligibility.breakdown.discover).map(([k, v]) => (
+                  <BreakdownBar key={k} label={k} value={v} />
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -302,6 +396,11 @@ export default function SEOAgent() {
                 </div>
               </div>
             </div>
+
+            {/* Eligibility card (news mode) */}
+            {result.eligibility && (
+              <EligibilityCard eligibility={result.eligibility} />
+            )}
 
             {/* Section cards */}
             {result.sections.map((section) => (

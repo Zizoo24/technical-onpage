@@ -371,7 +371,16 @@ unifiedAuditRouter.post('/', async (req, res) => {
       };
     } catch (err) {
       clearTimeout(timer);
-      return res.status(502).json({ url, mode, status: 'error', error: err.name === 'AbortError' ? 'Timeout' : err.message, summary: {}, sections: [], duration_ms: Date.now() - startTime });
+      let msg = err.message || 'Unknown fetch error';
+      if (err.name === 'AbortError') msg = 'Request timed out — the target server did not respond within 15 seconds.';
+      else if (err.cause?.code === 'EAI_AGAIN' || err.cause?.code === 'ENOTFOUND')
+        msg = `DNS resolution failed for "${new URL(url).hostname}". Check the URL or your network/DNS settings.`;
+      else if (err.cause?.code === 'ECONNREFUSED')
+        msg = `Connection refused by ${new URL(url).hostname}. The server may be down.`;
+      else if (err.cause?.code === 'ECONNRESET' || err.cause?.code === 'UND_ERR_SOCKET')
+        msg = `Connection reset by ${new URL(url).hostname}. Possible TLS or firewall issue.`;
+      else if (msg === 'fetch failed' && err.cause) msg = err.cause.message || msg;
+      return res.status(502).json({ url, mode, status: 'error', error: msg, summary: {}, sections: [], duration_ms: Date.now() - startTime });
     }
 
     // 2. Run technical analysis (always)

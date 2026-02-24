@@ -163,19 +163,27 @@ export default function SEOAgent() {
 
     try {
       const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 90_000);
       const response = await fetch(`${apiBase}/api/unified-audit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: url.trim(), mode: newsMode ? 'news' : 'technical' }),
+        signal: controller.signal,
       });
+      clearTimeout(timer);
       const data = await response.json();
       if (data.error && !data.sections?.length) {
         setError(data.error);
       } else {
         setResult(data);
       }
-    } catch {
-      setError('Failed to analyze URL. Please try again.');
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setError('Analysis timed out. The target server may be slow — try again or use a different URL.');
+      } else {
+        setError('Could not reach the analysis server. Make sure the backend is running.');
+      }
     } finally {
       setLoading(false);
     }

@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node server/index.js & vite --host 0.0.0.0",
     "dev:server": "node server/index.js",
     "build": "vite build",
     "start": "node server/index.js",

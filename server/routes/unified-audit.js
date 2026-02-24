@@ -13,6 +13,8 @@ import { analyzeCanonicalConsistency } from '../lib/modules/canonical-consistenc
 import { analyzeCoreWebVitals } from '../lib/modules/core-web-vitals.js';
 import { analyzeAmp } from '../lib/modules/amp-validator.js';
 import { analyzeFreshness } from '../lib/modules/freshness-analyzer.js';
+import { analyzeMigrationIntegrity } from '../lib/modules/migration-checks.js';
+import { normalizeUrl } from '../lib/url-utils.js';
 
 export const unifiedAuditRouter = Router();
 
@@ -340,6 +342,158 @@ function buildLinksSection(t) {
   return { id: 'links', title: 'Links & Structure', tooltip: 'Internal/external links, broken links, and orphan page risk.', score, status: sectionStatus(score), checks };
 }
 
+// ── Migration Integrity section (Module J) ─────────────────────
+
+function buildMigrationSection(migrationData) {
+  if (!migrationData) return null;
+  const checks = [];
+
+  // Pagination compatibility
+  for (const p of (migrationData.pagination || [])) {
+    const passVal = p.status === 'PASS' ? true : p.status === 'FAIL' ? false : null;
+    checks.push(ck(`pagination_${p.label.replace(/\s+/g, '_').toLowerCase()}`, p.label, passVal,
+      p.status === 'FAIL' ? 'high' : 'medium',
+      p.error
+        ? `Error: ${p.error}`
+        : `HTTP ${p.http_status}${p.redirected ? ` → ${p.final_url}` : ''}`,
+      p.status === 'FAIL' ? 'Ensure this URL pattern returns 200 or redirects (301/308) to a valid destination' : null));
+  }
+
+  // Canonical integrity
+  for (const c of (migrationData.canonical_integrity || [])) {
+    const passVal = c.status === 'PASS' ? true : c.status === 'FAIL' ? false : null;
+    checks.push(ck(`integrity_${c.label.replace(/\s+/g, '_').toLowerCase()}`, c.label, passVal,
+      c.status === 'FAIL' ? 'critical' : 'high',
+      c.detail || `HTTP ${c.http_status}`,
+      c.status === 'FAIL' && c.label.includes('404')
+        ? 'Configure your server to return 404/410 for unknown paths — do not serve a 200 page'
+        : c.status === 'FAIL'
+          ? 'Ensure canonical tags strip tracking parameters'
+          : null));
+  }
+
+  if (checks.length === 0) return null;
+
+  const score = sectionScore(checks);
+  return { id: 'migration', title: 'Migration & URL Integrity', tooltip: 'Pagination compatibility, soft-404 detection, and canonical handling for query parameters.', score, status: sectionStatus(score), checks };
+}
+
+// ── Internal Linking (light, single-page) ───────────────────────
+
+function buildInternalLinkingSection(t, html) {
+  const checks = [];
+
+  const linkCount = t.site_structure.internal_link_count || 0;
+  const uniqueUrls = t.site_structure.internal_urls?.length || 0;
+
+  checks.push(ck('internal_link_count', 'Internal link volume', linkCount >= 5, linkCount < 3 ? 'high' : 'medium',
+    `${linkCount} internal link(s) found (${uniqueUrls} unique)`,
+    linkCount < 5 ? 'Add more internal links to improve discoverability (aim for 5+)' : null));
+
+  // Detect related articles block
+  const hasRelated = /(?:related[- _]?(?:articles?|posts?|stories)|more[- _]?(?:stories|news|articles?)|you[- _]?(?:may|might)[- _]?(?:also|like)|read[- _]?(?:more|next|also))/i.test(html);
+  checks.push(ck('related_articles', 'Related articles block', hasRelated, 'medium',
+    hasRelated ? 'Related articles / read-more block detected' : 'No related articles block found',
+    hasRelated ? null : 'Add a related articles section to boost internal linking'));
+
+  // Link diversity — how many unique paths are linked
+  const urls = t.site_structure.internal_urls || [];
+  const pathPrefixes = new Set();
+  for (const u of urls) {
+    try {
+      const parsed = new URL(u);
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      if (parts.length > 0) pathPrefixes.add('/' + parts[0]);
+    } catch { /* skip */ }
+  }
+  const diverse = pathPrefixes.size >= 3;
+  checks.push(ck('link_diversity', 'Internal link diversity', diverse, 'low',
+    `Links span ${pathPrefixes.size} top-level path section(s)`,
+    diverse ? null : 'Link to content across more sections of the site'));
+
+  // Detect crawl-trap patterns in outgoing links
+  const trapPatterns = [
+    /\/\d{4}\/\d{2}\/\d{2}/,
+    /[?&](?:page|p|pg|offset|start)=\d/i,
+    /\/(?:calendar|events?)\/\d{4}/i,
+    /[?&](?:sort|order|filter|view|display)=/i,
+  ];
+  let trapCount = 0;
+  for (const u of urls) {
+    if (trapPatterns.some(p => p.test(u))) trapCount++;
+  }
+  if (trapCount > 0) {
+    checks.push(ck('crawl_traps', 'Crawl trap signals in links', trapCount <= 3, trapCount > 10 ? 'high' : 'medium',
+      `${trapCount} outgoing internal link(s) match crawl-trap patterns (calendar, pagination, filters)`,
+      'Review linked URLs for infinite crawl paths — nofollow or remove trap links'));
+  }
+
+  const score = sectionScore(checks);
+  return { id: 'internal_linking', title: 'Internal Linking', tooltip: 'Link volume, diversity, related article blocks, and crawl-trap detection from a single page.', score, status: sectionStatus(score), checks };
+}
+
+// ── Duplicate Protection (light, single-page) ──────────────────
+
+function buildDuplicateProtectionSection(t, url) {
+  const checks = [];
+
+  // Check if canonical is self-referencing
+  const canonical = t.technical_seo.canonical_url;
+  const normalizedPage = normalizeUrl(url, url);
+  const normalizedCanonical = canonical ? normalizeUrl(canonical, url) : null;
+
+  if (canonical && normalizedCanonical && normalizedPage) {
+    const isSelf = normalizedCanonical === normalizedPage;
+    checks.push(ck('self_canonical', 'Self-referencing canonical', isSelf, 'high',
+      isSelf ? 'Page canonical is self-referencing (good)' : `Canonical points elsewhere: ${canonical}`,
+      isSelf ? null : 'Ensure canonical points to the preferred version of this URL'));
+  }
+
+  // Trailing slash consistency
+  try {
+    const parsed = new URL(url);
+    const hasTrailing = parsed.pathname.length > 1 && parsed.pathname.endsWith('/');
+    if (canonical) {
+      const canonParsed = new URL(canonical, url);
+      const canonTrailing = canonParsed.pathname.length > 1 && canonParsed.pathname.endsWith('/');
+      if (hasTrailing !== canonTrailing) {
+        checks.push(ck('trailing_slash', 'Trailing slash consistency', false, 'medium',
+          `Page URL ${hasTrailing ? 'has' : 'lacks'} trailing slash, canonical ${canonTrailing ? 'has' : 'lacks'} it`,
+          'Align trailing slash policy between URLs and canonicals'));
+      } else {
+        checks.push(ck('trailing_slash', 'Trailing slash consistency', true, 'low',
+          'Page URL and canonical have consistent trailing slash usage', null));
+      }
+    }
+  } catch { /* skip */ }
+
+  // Check for tracking params in current URL
+  try {
+    const parsed = new URL(url);
+    const trackingParams = [...parsed.searchParams.keys()].filter(k =>
+      /^(utm_|fbclid|gclid|msclkid|ref$|_ga$|_gl$)/.test(k.toLowerCase()));
+    if (trackingParams.length > 0) {
+      checks.push(ck('tracking_in_url', 'URL free of tracking params', false, 'high',
+        `Tracking params in URL: ${trackingParams.join(', ')}`,
+        'Strip tracking parameters from URLs via canonical or server-side redirect'));
+    }
+  } catch { /* skip */ }
+
+  // AMP duplicate detection
+  const ampLink = t.technical_seo.amp_url ||
+    (/<link[^>]*rel=["']amphtml["'][^>]*href=["']([^"']*)["']/i.exec(t._raw_html || '') || [])[1];
+  if (ampLink) {
+    checks.push(ck('amp_duplicate', 'AMP URL declared', null, 'info',
+      `AMP version: ${ampLink}`,
+      'Ensure AMP canonical points back to this page'));
+  }
+
+  if (checks.length === 0) return null;
+
+  const score = sectionScore(checks);
+  return { id: 'duplicate_protection', title: 'Duplicate URL Protection', tooltip: 'Canonical self-reference, trailing slash consistency, tracking params, and AMP duplicates.', score, status: sectionStatus(score), checks };
+}
+
 // ── Route handler ───────────────────────────────────────────────
 
 unifiedAuditRouter.post('/', async (req, res) => {
@@ -389,6 +543,7 @@ unifiedAuditRouter.post('/', async (req, res) => {
 
     // 3. Run news modules in parallel (only in news mode)
     let newsModules = {};
+    let migrationData = null;
     if (mode === 'news') {
       const settled = await Promise.allSettled([
         analyzeNewsSitemap(url),
@@ -397,11 +552,13 @@ unifiedAuditRouter.post('/', async (req, res) => {
         analyzeCoreWebVitals(html, url),
         analyzeAmp(html, url),
         analyzeFreshness(html, url, httpHeaders),
+        analyzeMigrationIntegrity(url),
       ]);
-      const keys = ['news_sitemap', 'article_schema', 'canonical_consistency', 'core_web_vitals', 'amp_validator', 'freshness'];
+      const keys = ['news_sitemap', 'article_schema', 'canonical_consistency', 'core_web_vitals', 'amp_validator', 'freshness', 'migration'];
       keys.forEach((k, i) => {
         newsModules[k] = settled[i].status === 'fulfilled' ? settled[i].value : { status: 'FAIL', error: settled[i].reason?.message };
       });
+      migrationData = newsModules.migration;
     }
 
     // 4. Build sections
@@ -417,6 +574,18 @@ unifiedAuditRouter.post('/', async (req, res) => {
 
     const freshnessSection = buildFreshnessSection(newsModules.freshness);
     if (freshnessSection) sections.push(freshnessSection);
+
+    // News-mode extra sections: migration, internal linking, duplicate protection
+    if (mode === 'news') {
+      const migrationSection = buildMigrationSection(migrationData);
+      if (migrationSection) sections.push(migrationSection);
+
+      const internalLinkingSection = buildInternalLinkingSection(technical, html);
+      if (internalLinkingSection) sections.push(internalLinkingSection);
+
+      const dupSection = buildDuplicateProtectionSection(technical, url);
+      if (dupSection) sections.push(dupSection);
+    }
 
     sections.push(buildContentSection(technical));
     sections.push(buildLinksSection(technical));

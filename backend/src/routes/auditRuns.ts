@@ -1,5 +1,5 @@
 /**
- * Audit routes — Phase 1: site-level checks + per-URL audits.
+ * Audit routes — Phase 1+2: site-level checks + modular per-URL audits.
  *
  * GET  /api/audit-runs/:id/site-checks
  * POST /api/sites/:siteId/audit
@@ -10,8 +10,32 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { runSiteChecks } from '../services/checks/siteChecks.js';
+import { runCanonicalCheck, detectPageType } from '../services/checks/page/canonicalCheck.js';
+import { runStructuredDataCheck } from '../services/checks/page/structuredDataCheck.js';
+import { runContentMetaCheck } from '../services/checks/page/contentMetaCheck.js';
+import { runPaginationCheck } from '../services/checks/page/paginationCheck.js';
+import { runPerformanceCheck } from '../services/checks/page/performanceCheck.js';
 
 export const auditRunsRouter = Router();
+
+const PAGE_TIMEOUT = 15_000;
+const UA = 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)';
+
+// ── SSRF guard ──────────────────────────────────────────────────
+
+const PRIVATE_RANGES = [
+  /^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./,
+  /^192\.168\./, /^169\.254\./, /^0\./, /^localhost$/i, /^\[::1\]$/,
+];
+
+function isSafeUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    for (const re of PRIVATE_RANGES) { if (re.test(u.hostname)) return false; }
+    return true;
+  } catch { return false; }
+}
 
 // ── GET /api/audit-runs/:id/site-checks ─────────────────────────
 
@@ -53,10 +77,7 @@ auditRunsRouter.post('/sites/:siteId/audit', async (req: Request, res: Response)
 
     // 2. Create AuditRun
     const auditRun = await prisma.auditRun.create({
-      data: {
-        siteId: site.id,
-        status: 'RUNNING',
-      },
+      data: { siteId: site.id, status: 'RUNNING' },
     });
 
     // 3. Run site-level checks (never crash the run)
@@ -67,93 +88,128 @@ auditRunsRouter.post('/sites/:siteId/audit', async (req: Request, res: Response)
     } catch (err: unknown) {
       siteChecks = {
         robots: {
-          status: 'ERROR',
-          httpStatus: 0,
-          sitemapsFound: [] as string[],
+          status: 'ERROR', httpStatus: 0, sitemapsFound: [] as string[],
           notes: [`Site checks failed: ${err instanceof Error ? err.message : 'unknown'}`],
         },
         sitemap: {
-          status: 'ERROR',
-          discoveredFrom: 'none',
-          validatedRoot: null,
-          type: null,
+          status: 'ERROR', discoveredFrom: 'none', validatedRoot: null, type: null,
           errors: [`Site checks failed: ${err instanceof Error ? err.message : 'unknown'}`],
           warnings: [] as string[],
         },
       };
     }
 
-    // 4. Store siteChecks
     await prisma.auditRun.update({
       where: { id: auditRun.id },
       data: { siteChecks: siteChecks ?? Prisma.JsonNull },
     });
 
-    // 5. Per-URL audits (existing behavior — iterate seed URLs)
+    // 4. Per-URL audits with modular page checks
     const results = [];
+    const seenTitles = new Set<string>(); // cross-URL duplicate detection
+
     for (const seed of site.seedUrls) {
       try {
-        // Fetch page
+        if (!isSafeUrl(seed.url)) {
+          const result = await prisma.auditResult.create({
+            data: {
+              auditRunId: auditRun.id, url: seed.url,
+              data: { error: 'Blocked by SSRF guard' },
+              status: 'FAIL', recommendations: ['URL blocked by security policy'],
+            },
+          });
+          results.push(result);
+          continue;
+        }
+
+        // Fetch page with timing
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 15_000);
+        const timer = setTimeout(() => controller.abort(), PAGE_TIMEOUT);
         let html = '';
         let fetchOk = false;
+        let loadMs = 0;
 
+        const fetchStart = Date.now();
         try {
           const pageRes = await fetch(seed.url, {
             redirect: 'follow',
             signal: controller.signal,
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)',
-              Accept: 'text/html,application/xhtml+xml',
-            },
+            headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' },
           });
           if (pageRes.ok) {
             html = await pageRes.text();
             fetchOk = true;
           }
         } finally {
+          loadMs = Date.now() - fetchStart;
           clearTimeout(timer);
         }
 
-        // Determine status + recommendations
-        let status: string | null = null;
-        let recommendations: Prisma.InputJsonValue | undefined = undefined;
-        let data: Prisma.InputJsonValue | undefined = undefined;
-
-        if (fetchOk && html) {
-          const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-          const descMatch =
-            html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i) ??
-            html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*name=["']description["']/i);
-          const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-          const canonicalMatch =
-            html.match(/<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']*)["']/i) ??
-            html.match(/<link[^>]*href=["']([^"']*)["'][^>]*rel=["']canonical["']/i);
-
-          const recs: string[] = [];
-          let hasFail = false;
-          let hasWarn = false;
-
-          if (!titleMatch) { recs.push('Add a <title> tag'); hasFail = true; }
-          if (!descMatch) { recs.push('Add a meta description'); hasWarn = true; }
-          if (!h1Match) { recs.push('Add an H1 heading'); hasWarn = true; }
-          if (!canonicalMatch) { recs.push('Add a canonical URL'); hasWarn = true; }
-
-          status = hasFail ? 'FAIL' : hasWarn ? 'WARN' : 'PASS';
-          recommendations = recs.length > 0 ? recs : undefined;
-          data = {
-            title: titleMatch?.[1]?.trim() ?? null,
-            description: descMatch?.[1] ?? null,
-            h1: h1Match?.[1]?.trim() ?? null,
-            canonical: canonicalMatch?.[1] ?? null,
-            htmlLength: html.length,
-          };
-        } else {
-          status = 'FAIL';
-          recommendations = ['Page could not be fetched'];
-          data = { error: 'Fetch failed' };
+        if (!fetchOk || !html) {
+          const result = await prisma.auditResult.create({
+            data: {
+              auditRunId: auditRun.id, url: seed.url,
+              data: { error: 'Fetch failed' },
+              status: 'FAIL', recommendations: ['Page could not be fetched'],
+            },
+          });
+          results.push(result);
+          continue;
         }
+
+        // Detect page type
+        const pageType = detectPageType(seed.url);
+
+        // Run all page checks — each wrapped so one failure never crashes the run
+        let canonical = null;
+        try { canonical = runCanonicalCheck(html, seed.url, pageType); } catch { /* skip */ }
+
+        let structuredData = null;
+        try { structuredData = runStructuredDataCheck(html, pageType); } catch { /* skip */ }
+
+        let contentMeta = null;
+        try { contentMeta = runContentMetaCheck(html, pageType, seenTitles); } catch { /* skip */ }
+
+        let pagination = null;
+        try { pagination = runPaginationCheck(html, seed.url, pageType, canonical?.canonicalUrl ?? null); } catch { /* skip */ }
+
+        let performance = null;
+        try { performance = await runPerformanceCheck(seed.url, html, loadMs); } catch { /* skip */ }
+
+        // Aggregate status from sub-checks
+        const subStatuses: string[] = [];
+        if (canonical) {
+          subStatuses.push(canonical.exists && canonical.match ? 'PASS' : canonical.exists ? 'WARN' : 'FAIL');
+        }
+        if (structuredData) subStatuses.push(structuredData.status);
+        if (contentMeta) {
+          subStatuses.push(contentMeta.warnings.length === 0 ? 'PASS' : (contentMeta.titleLenOk && contentMeta.h1Ok ? 'WARN' : 'FAIL'));
+        }
+
+        let status: string = 'PASS';
+        if (subStatuses.includes('FAIL')) status = 'FAIL';
+        else if (subStatuses.includes('WARN')) status = 'WARN';
+
+        // Aggregate recommendations
+        const recs: string[] = [];
+        if (canonical) for (const n of canonical.notes) recs.push(n);
+        if (structuredData) {
+          for (const f of structuredData.missingFields) recs.push(`Add ${f}`);
+          for (const n of structuredData.notes) recs.push(n);
+        }
+        if (contentMeta) for (const w of contentMeta.warnings) recs.push(w);
+        if (pagination) for (const n of pagination.notes) recs.push(n);
+
+        // Serialize sub-check results into data JSON
+        const toJson = (v: unknown) => JSON.parse(JSON.stringify(v));
+        const data: Prisma.InputJsonValue = {
+          pageType,
+          canonical: canonical ? toJson(canonical) : null,
+          structuredData: structuredData ? toJson(structuredData) : null,
+          contentMeta: contentMeta ? toJson(contentMeta) : null,
+          pagination: pagination ? toJson(pagination) : null,
+          performance: performance ? toJson(performance) : null,
+        };
 
         const result = await prisma.auditResult.create({
           data: {
@@ -161,31 +217,26 @@ auditRunsRouter.post('/sites/:siteId/audit', async (req: Request, res: Response)
             url: seed.url,
             data,
             status,
-            recommendations,
+            recommendations: recs.length > 0 ? recs : undefined,
           },
         });
         results.push(result);
       } catch (err: unknown) {
         const result = await prisma.auditResult.create({
           data: {
-            auditRunId: auditRun.id,
-            url: seed.url,
+            auditRunId: auditRun.id, url: seed.url,
             data: { error: err instanceof Error ? err.message : 'unknown' },
-            status: 'FAIL',
-            recommendations: ['Audit failed for this URL'],
+            status: 'FAIL', recommendations: ['Audit failed for this URL'],
           },
         });
         results.push(result);
       }
     }
 
-    // 6. Mark run finished
+    // 5. Mark run finished
     const finishedRun = await prisma.auditRun.update({
       where: { id: auditRun.id },
-      data: {
-        status: 'COMPLETED',
-        finishedAt: new Date(),
-      },
+      data: { status: 'COMPLETED', finishedAt: new Date() },
       include: { results: true },
     });
 

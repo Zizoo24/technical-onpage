@@ -34,6 +34,12 @@ COPY --from=build /app/backend/dist ./backend/dist
 # Copy built frontend from build stage
 COPY --from=build /app/dist ./dist
 
+# Copy entrypoint script (runs migrations then starts server)
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+
+# Ensure appuser owns the working directory
+RUN chown -R appuser:appgroup /app
+
 # Switch to non-root user
 USER appuser
 
@@ -47,4 +53,4 @@ ENV PORT=3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
-CMD ["node", "server/index.js"]
+ENTRYPOINT ["sh", "./docker-entrypoint.sh"]

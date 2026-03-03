@@ -13,6 +13,12 @@ const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
 // --------------- Middleware ---------------
+app.use((req, _res, next) => {
+  if (req.url.startsWith('/api')) {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  }
+  next();
+});
 app.use(express.json({ limit: '2mb' }));
 
 // CORS - allow all origins (same behaviour as the edge functions)
@@ -51,6 +57,12 @@ try {
 // Backward-compatible Supabase-style paths (if a reverse proxy sends these)
 app.use('/functions/v1/seo-intelligence', seoIntelligenceRouter);
 app.use('/functions/v1/seo-site-crawler', seoCrawlerRouter);
+
+// Catch-all for unmatched /api routes — return clear 404 JSON
+app.all('/api/*', (req, res) => {
+  console.warn(`[404] No handler for ${req.method} ${req.url}`);
+  res.status(404).json({ error: `Not found: ${req.method} ${req.url}` });
+});
 
 // --------------- Static files (Vite build output) ---------------
 const distPath = join(__dirname, '..', 'dist');

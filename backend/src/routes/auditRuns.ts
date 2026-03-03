@@ -442,6 +442,7 @@ auditRunsRouter.post('/technical-analyzer/run', async (req: Request, res: Respon
     })();
   } catch (err: unknown) {
     console.error('POST technical-analyzer/run error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    res.status(500).json({ error: 'Internal server error', detail: message });
   }
 });

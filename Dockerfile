@@ -3,24 +3,23 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Install ALL dependencies (dev included, needed for tsc & prisma)
+# Install ALL dependencies (dev included, needed for tsc & vite)
 COPY package.json package-lock.json* ./
 COPY prisma/ ./prisma/
-RUN npm ci && npx prisma generate
+RUN npm ci
 
-# Copy source and build both frontend and backend
+# Copy source and run unified build (prisma generate + vite + tsc)
 COPY . .
-RUN npm run build && npm run build:backend
+RUN npm run build
 
 # ── Stage 2: Production runtime ──────────────────────────────────
 FROM node:20-alpine AS production
 
-# Security: run as non-root
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
-# Install only production dependencies + generate Prisma client
+# Install production dependencies + generate Prisma client
 COPY package.json package-lock.json* ./
 COPY prisma/ ./prisma/
 RUN npm ci --omit=dev && npx prisma generate && npm cache clean --force
@@ -34,23 +33,16 @@ COPY --from=build /app/backend/dist ./backend/dist
 # Copy built frontend from build stage
 COPY --from=build /app/dist ./dist
 
-# Copy entrypoint script (runs migrations then starts server)
-COPY docker-entrypoint.sh ./docker-entrypoint.sh
-
-# Ensure appuser owns the working directory
 RUN chown -R appuser:appgroup /app
-
-# Switch to non-root user
 USER appuser
 
-# Expose the port (default 3000, overridable via PORT env)
 EXPOSE 3000
 
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Health check – Docker / orchestrator can use this
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
-ENTRYPOINT ["sh", "./docker-entrypoint.sh"]
+# Run migrations then start
+CMD ["sh", "-c", "npx prisma migrate deploy && node server/index.js"]

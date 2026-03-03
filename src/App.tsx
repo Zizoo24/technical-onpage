@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import SEOAgent from './components/SEOAgent';
 import SiteCrawler from './components/SiteCrawler';
+import AuditRunView from './components/AuditRunView';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'analyzer' | 'crawler'>('analyzer');
+  const [activeTab, setActiveTab] = useState<'analyzer' | 'crawler' | 'auditrun'>('analyzer');
 
   return (
     <div>
@@ -30,12 +31,23 @@ function App() {
             >
               SEO Site Crawler
             </button>
+            <button
+              onClick={() => setActiveTab('auditrun')}
+              className={`px-6 py-4 font-medium text-sm transition-colors ${
+                activeTab === 'auditrun'
+                  ? 'text-indigo-600 border-b-2 border-indigo-600'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Audit Run Viewer
+            </button>
           </div>
         </div>
       </div>
 
       {activeTab === 'analyzer' && <SEOAgent />}
       {activeTab === 'crawler' && <SiteCrawler />}
+      {activeTab === 'auditrun' && <AuditRunView />}
     </div>
   );
 }

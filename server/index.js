@@ -39,6 +39,15 @@ app.use('/api/seo-site-crawler', seoCrawlerRouter);
 app.use('/api/news-seo', newsSeoRouter);
 app.use('/api/unified-audit', unifiedAuditRouter);
 
+// Phase 1: DB-backed audit routes (loaded from compiled backend)
+try {
+  const { auditRunsRouter } = await import('../backend/dist/routes/auditRuns.js');
+  app.use('/api', auditRunsRouter);
+  console.log('Phase 1 audit routes loaded');
+} catch (err) {
+  console.warn('Phase 1 audit routes not available (run `npm run build:backend` first):', err.message);
+}
+
 // Backward-compatible Supabase-style paths (if a reverse proxy sends these)
 app.use('/functions/v1/seo-intelligence', seoIntelligenceRouter);
 app.use('/functions/v1/seo-site-crawler', seoCrawlerRouter);

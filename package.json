@@ -6,9 +6,10 @@
   "scripts": {
     "dev": "node --env-file=.env server/index.js & vite --host 0.0.0.0",
     "dev:server": "node --env-file=.env server/index.js",
-    "build": "vite build",
+    "dev:start": "node --env-file=.env server/index.js",
+    "build": "prisma generate && vite build && tsc -p backend/tsconfig.json",
     "build:backend": "tsc -p backend/tsconfig.json",
-    "start": "node --env-file=.env server/index.js",
+    "start": "prisma migrate deploy && node server/index.js",
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
@@ -20,6 +21,7 @@
     "@prisma/client": "^6.4.1",
     "express": "^4.21.0",
     "lucide-react": "^0.344.0",
+    "prisma": "^6.4.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -36,7 +38,6 @@
     "eslint-plugin-react-refresh": "^0.4.11",
     "globals": "^15.9.0",
     "postcss": "^8.4.35",
-    "prisma": "^6.4.1",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.5.3",
     "typescript-eslint": "^8.3.0",

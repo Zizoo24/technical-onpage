@@ -15,6 +15,7 @@ import { runStructuredDataCheck } from '../services/checks/page/structuredDataCh
 import { runContentMetaCheck } from '../services/checks/page/contentMetaCheck.js';
 import { runPaginationCheck } from '../services/checks/page/paginationCheck.js';
 import { runPerformanceCheck } from '../services/checks/page/performanceCheck.js';
+import { scoreResult, scoreSiteChecks } from '../services/checks/scoring.js';
 
 export const auditRunsRouter = Router();
 
@@ -55,6 +56,47 @@ auditRunsRouter.get('/audit-runs/:id/site-checks', async (req: Request, res: Res
     res.json({ id: run.id, siteChecks: run.siteChecks });
   } catch (err: unknown) {
     console.error('GET site-checks error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── GET /api/audit-runs/:id/results ──────────────────────────────
+
+auditRunsRouter.get('/audit-runs/:id/results', async (req: Request, res: Response) => {
+  try {
+    const id = req.params['id'] as string;
+    const run = await prisma.auditRun.findUnique({
+      where: { id },
+      include: { results: true },
+    });
+
+    if (!run) {
+      res.status(404).json({ error: 'AuditRun not found' });
+      return;
+    }
+
+    // Group results by pageType
+    const grouped: Record<string, typeof run.results> = {};
+    for (const r of run.results) {
+      const data = r.data as Record<string, unknown> | null;
+      const pageType = (data?.pageType as string) ?? 'unknown';
+      if (!grouped[pageType]) grouped[pageType] = [];
+      grouped[pageType].push(r);
+    }
+
+    // Compute site-level recommendations
+    const siteRecs = scoreSiteChecks(run.siteChecks as Record<string, unknown> | null);
+
+    res.json({
+      id: run.id,
+      status: run.status,
+      siteChecks: run.siteChecks,
+      siteRecommendations: siteRecs,
+      resultsByType: grouped,
+      results: run.results,
+    });
+  } catch (err: unknown) {
+    console.error('GET results error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -176,30 +218,6 @@ auditRunsRouter.post('/sites/:siteId/audit', async (req: Request, res: Response)
         let performance = null;
         try { performance = await runPerformanceCheck(seed.url, html, loadMs); } catch { /* skip */ }
 
-        // Aggregate status from sub-checks
-        const subStatuses: string[] = [];
-        if (canonical) {
-          subStatuses.push(canonical.exists && canonical.match ? 'PASS' : canonical.exists ? 'WARN' : 'FAIL');
-        }
-        if (structuredData) subStatuses.push(structuredData.status);
-        if (contentMeta) {
-          subStatuses.push(contentMeta.warnings.length === 0 ? 'PASS' : (contentMeta.titleLenOk && contentMeta.h1Ok ? 'WARN' : 'FAIL'));
-        }
-
-        let status: string = 'PASS';
-        if (subStatuses.includes('FAIL')) status = 'FAIL';
-        else if (subStatuses.includes('WARN')) status = 'WARN';
-
-        // Aggregate recommendations
-        const recs: string[] = [];
-        if (canonical) for (const n of canonical.notes) recs.push(n);
-        if (structuredData) {
-          for (const f of structuredData.missingFields) recs.push(`Add ${f}`);
-          for (const n of structuredData.notes) recs.push(n);
-        }
-        if (contentMeta) for (const w of contentMeta.warnings) recs.push(w);
-        if (pagination) for (const n of pagination.notes) recs.push(n);
-
         // Serialize sub-check results into data JSON
         const toJson = (v: unknown) => JSON.parse(JSON.stringify(v));
         const data: Prisma.InputJsonValue = {
@@ -211,13 +229,18 @@ auditRunsRouter.post('/sites/:siteId/audit', async (req: Request, res: Response)
           performance: performance ? toJson(performance) : null,
         };
 
+        // Scoring engine: compute status + prioritised recommendations
+        const scored = scoreResult(data as Record<string, unknown>);
+
         const result = await prisma.auditResult.create({
           data: {
             auditRunId: auditRun.id,
             url: seed.url,
             data,
-            status,
-            recommendations: recs.length > 0 ? recs : undefined,
+            status: scored.status,
+            recommendations: scored.recommendations.length > 0
+              ? scored.recommendations as unknown as Prisma.InputJsonValue
+              : undefined,
           },
         });
         results.push(result);

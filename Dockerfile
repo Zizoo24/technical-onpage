@@ -1,15 +1,16 @@
-# ── Stage 1: Build the Vite frontend ──────────────────────────────
+# ── Stage 1: Build frontend + backend ─────────────────────────────
 FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Install dependencies first (layer cache)
+# Install ALL dependencies (dev included, needed for tsc & prisma)
 COPY package.json package-lock.json* ./
-RUN npm ci --ignore-scripts
+COPY prisma/ ./prisma/
+RUN npm ci && npx prisma generate
 
-# Copy source and build
+# Copy source and build both frontend and backend
 COPY . .
-RUN npm run build
+RUN npm run build && npm run build:backend
 
 # ── Stage 2: Production runtime ──────────────────────────────────
 FROM node:20-alpine AS production
@@ -19,12 +20,16 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
-# Install only production dependencies
+# Install only production dependencies + generate Prisma client
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY prisma/ ./prisma/
+RUN npm ci --omit=dev && npx prisma generate && npm cache clean --force
 
 # Copy server code
 COPY server/ ./server/
+
+# Copy compiled backend (TypeScript → JS)
+COPY --from=build /app/backend/dist ./backend/dist
 
 # Copy built frontend from build stage
 COPY --from=build /app/dist ./dist

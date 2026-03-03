@@ -1,8 +1,10 @@
 /**
- * Audit routes — Phase 1+2: site-level checks + modular per-URL audits.
+ * Audit routes — site-level checks + modular per-URL audits.
  *
  * GET  /api/audit-runs/:id/site-checks
+ * GET  /api/audit-runs/:id/results
  * POST /api/sites/:siteId/audit
+ * POST /api/technical-analyzer/run
  */
 
 import { Router } from 'express';
@@ -266,6 +268,180 @@ auditRunsRouter.post('/sites/:siteId/audit', async (req: Request, res: Response)
     res.json(finishedRun);
   } catch (err: unknown) {
     console.error('POST audit error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── POST /api/technical-analyzer/run ────────────────────────────
+// Simplified entry point: accepts URLs, upserts Site + SeedUrls,
+// kicks off audit run asynchronously, returns IDs for polling.
+
+interface AnalyzerBody {
+  homeUrl: string;
+  articleUrl: string;
+  optionalUrls?: {
+    section?: string;
+    tag?: string;
+    search?: string;
+    author?: string;
+    video_article?: string;
+  };
+}
+
+const SEED_TYPES = ['home', 'article', 'section', 'tag', 'search', 'author', 'video_article'] as const;
+
+auditRunsRouter.post('/technical-analyzer/run', async (req: Request, res: Response) => {
+  try {
+    const body = req.body as AnalyzerBody;
+    if (!body.homeUrl || !body.articleUrl) {
+      res.status(400).json({ error: 'homeUrl and articleUrl are required' });
+      return;
+    }
+
+    // a) Extract domain from homeUrl
+    let domain: string;
+    try {
+      const u = new URL(body.homeUrl);
+      domain = u.hostname;
+    } catch {
+      res.status(400).json({ error: 'Invalid homeUrl' });
+      return;
+    }
+
+    // b) Upsert Site by domain
+    let site = await prisma.site.findUnique({ where: { domain } });
+    if (!site) {
+      site = await prisma.site.create({ data: { domain } });
+    }
+
+    // c) Collect all seed URLs with types
+    const urlMap: Record<string, string> = { home: body.homeUrl, article: body.articleUrl };
+    if (body.optionalUrls) {
+      for (const [type, url] of Object.entries(body.optionalUrls)) {
+        if (url && url.trim() && SEED_TYPES.includes(type as typeof SEED_TYPES[number])) {
+          urlMap[type] = url.trim();
+        }
+      }
+    }
+
+    // Delete old seed URLs for this site and recreate
+    await prisma.seedUrl.deleteMany({ where: { siteId: site.id } });
+    for (const [, url] of Object.entries(urlMap)) {
+      await prisma.seedUrl.create({ data: { siteId: site.id, url } });
+    }
+
+    // d) Create AuditRun
+    const auditRun = await prisma.auditRun.create({
+      data: { siteId: site.id, status: 'RUNNING' },
+    });
+
+    // e) Return IDs immediately — run audit in background
+    res.json({ siteId: site.id, auditRunId: auditRun.id });
+
+    // Fire-and-forget audit execution
+    (async () => {
+      try {
+        // Site-level checks
+        let siteChecks: Prisma.InputJsonValue | null = null;
+        try {
+          const checks = await runSiteChecks(domain);
+          siteChecks = JSON.parse(JSON.stringify(checks)) as Prisma.InputJsonValue;
+        } catch (err: unknown) {
+          siteChecks = {
+            robots: { status: 'ERROR', httpStatus: 0, sitemapsFound: [] as string[],
+              notes: [`Site checks failed: ${err instanceof Error ? err.message : 'unknown'}`] },
+            sitemap: { status: 'ERROR', discoveredFrom: 'none', validatedRoot: null, type: null,
+              errors: [`Site checks failed: ${err instanceof Error ? err.message : 'unknown'}`],
+              warnings: [] as string[] },
+          };
+        }
+
+        await prisma.auditRun.update({
+          where: { id: auditRun.id },
+          data: { siteChecks: siteChecks ?? Prisma.JsonNull },
+        });
+
+        // Per-URL audits
+        const seedUrls = await prisma.seedUrl.findMany({ where: { siteId: site!.id } });
+        const seenTitles = new Set<string>();
+
+        for (const seed of seedUrls) {
+          try {
+            if (!isSafeUrl(seed.url)) {
+              await prisma.auditResult.create({
+                data: { auditRunId: auditRun.id, url: seed.url,
+                  data: { error: 'Blocked by SSRF guard' },
+                  status: 'FAIL', recommendations: ['URL blocked by security policy'] },
+              });
+              continue;
+            }
+
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), PAGE_TIMEOUT);
+            let html = '', fetchOk = false, loadMs = 0;
+            const fetchStart = Date.now();
+            try {
+              const pageRes = await fetch(seed.url, {
+                redirect: 'follow', signal: controller.signal,
+                headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' },
+              });
+              if (pageRes.ok) { html = await pageRes.text(); fetchOk = true; }
+            } finally { loadMs = Date.now() - fetchStart; clearTimeout(timer); }
+
+            if (!fetchOk || !html) {
+              await prisma.auditResult.create({
+                data: { auditRunId: auditRun.id, url: seed.url,
+                  data: { error: 'Fetch failed' },
+                  status: 'FAIL', recommendations: ['Page could not be fetched'] },
+              });
+              continue;
+            }
+
+            const pageType = detectPageType(seed.url);
+            let canonical = null; try { canonical = runCanonicalCheck(html, seed.url, pageType); } catch { /* */ }
+            let structuredData = null; try { structuredData = runStructuredDataCheck(html, pageType); } catch { /* */ }
+            let contentMeta = null; try { contentMeta = runContentMetaCheck(html, pageType, seenTitles); } catch { /* */ }
+            let pagination = null; try { pagination = runPaginationCheck(html, seed.url, pageType, canonical?.canonicalUrl ?? null); } catch { /* */ }
+            let performance = null; try { performance = await runPerformanceCheck(seed.url, html, loadMs); } catch { /* */ }
+
+            const toJson = (v: unknown) => JSON.parse(JSON.stringify(v));
+            const data: Prisma.InputJsonValue = {
+              pageType, canonical: canonical ? toJson(canonical) : null,
+              structuredData: structuredData ? toJson(structuredData) : null,
+              contentMeta: contentMeta ? toJson(contentMeta) : null,
+              pagination: pagination ? toJson(pagination) : null,
+              performance: performance ? toJson(performance) : null,
+            };
+            const scored = scoreResult(data as Record<string, unknown>);
+            await prisma.auditResult.create({
+              data: { auditRunId: auditRun.id, url: seed.url, data,
+                status: scored.status,
+                recommendations: scored.recommendations.length > 0
+                  ? scored.recommendations as unknown as Prisma.InputJsonValue : undefined },
+            });
+          } catch (err: unknown) {
+            await prisma.auditResult.create({
+              data: { auditRunId: auditRun.id, url: seed.url,
+                data: { error: err instanceof Error ? err.message : 'unknown' },
+                status: 'FAIL', recommendations: ['Audit failed for this URL'] },
+            });
+          }
+        }
+
+        await prisma.auditRun.update({
+          where: { id: auditRun.id },
+          data: { status: 'COMPLETED', finishedAt: new Date() },
+        });
+      } catch (err) {
+        console.error('Background audit error:', err);
+        await prisma.auditRun.update({
+          where: { id: auditRun.id },
+          data: { status: 'FAILED', finishedAt: new Date() },
+        }).catch(() => {});
+      }
+    })();
+  } catch (err: unknown) {
+    console.error('POST technical-analyzer/run error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

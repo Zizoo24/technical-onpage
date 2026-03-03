@@ -45,4 +45,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
 # Run migrations then start
-CMD ["sh", "-c", "npx prisma migrate deploy && node server/index.js"]
+CMD ["sh", "-c", "npx prisma migrate deploy; node server/index.js"]

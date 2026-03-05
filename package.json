@@ -9,7 +9,7 @@
     "dev:start": "node --env-file=.env server/index.js",
     "build": "prisma generate && vite build && tsc -p backend/tsconfig.json",
     "build:backend": "tsc -p backend/tsconfig.json",
-    "start": "prisma db push --skip-generate; node server/index.js",
+    "start": "prisma db push --skip-generate --accept-data-loss || true; node server/index.js",
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",

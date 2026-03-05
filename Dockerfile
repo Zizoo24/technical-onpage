@@ -44,5 +44,5 @@ ENV PORT=3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
-# Run migrations then start
-CMD ["sh", "-c", "npx prisma db push --skip-generate; node server/index.js"]
+# Push schema to DB (non-interactive, tolerant of failure) then start server
+CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss 2>&1 || echo 'WARN: prisma db push failed — server will start anyway'; exec node server/index.js"]

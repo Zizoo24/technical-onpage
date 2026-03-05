@@ -332,6 +332,7 @@ const OPTIONAL_TYPES = [
 
 const POLL_INTERVAL = 2000;
 const POLL_MAX = 60_000;
+const POLL_MAX_ERRORS = 5; // stop after 5 consecutive failures
 
 export default function SEOAgent() {
   const [homeUrl, setHomeUrl] = useState('');
@@ -348,13 +349,20 @@ export default function SEOAgent() {
     if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
   }, []);
 
-  const pollResults = useCallback(async (auditRunId: string, started: number) => {
+  const pollResults = useCallback(async (auditRunId: string, started: number, errorCount = 0) => {
     const apiBase = import.meta.env.VITE_API_BASE_URL || '';
     try {
       const res = await fetch(`${apiBase}/api/audit-runs/${auditRunId}/results`);
       if (!res.ok) {
+        const nextErrors = errorCount + 1;
+        if (nextErrors >= POLL_MAX_ERRORS) {
+          const body = await res.json().catch(() => ({}));
+          setError((body as Record<string, string>).detail || (body as Record<string, string>).error || `Server error (HTTP ${res.status})`);
+          setLoading(false);
+          return;
+        }
         if (Date.now() - started < POLL_MAX) {
-          pollRef.current = setTimeout(() => pollResults(auditRunId, started), POLL_INTERVAL);
+          pollRef.current = setTimeout(() => pollResults(auditRunId, started, nextErrors), POLL_INTERVAL);
           return;
         }
         setError('Timed out waiting for audit results.');
@@ -368,18 +376,24 @@ export default function SEOAgent() {
         setProgress('');
         return;
       }
-      // Still running
+      // Still running — reset error count on success
       setProgress(`Running... ${data.results?.length ?? 0} URLs checked`);
       if (Date.now() - started < POLL_MAX) {
-        pollRef.current = setTimeout(() => pollResults(auditRunId, started), POLL_INTERVAL);
+        pollRef.current = setTimeout(() => pollResults(auditRunId, started, 0), POLL_INTERVAL);
       } else {
         setRunData(data); // show partial
         setLoading(false);
         setProgress('');
       }
     } catch {
+      const nextErrors = errorCount + 1;
+      if (nextErrors >= POLL_MAX_ERRORS) {
+        setError('Lost connection to the server. Please check that the backend is running and try again.');
+        setLoading(false);
+        return;
+      }
       if (Date.now() - started < POLL_MAX) {
-        pollRef.current = setTimeout(() => pollResults(auditRunId, started), POLL_INTERVAL);
+        pollRef.current = setTimeout(() => pollResults(auditRunId, started, nextErrors), POLL_INTERVAL);
       } else {
         setError('Lost connection while waiting for results.');
         setLoading(false);
@@ -412,7 +426,8 @@ export default function SEOAgent() {
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError((body as Record<string, string>).error ?? `HTTP ${res.status}`);
+        const b = body as Record<string, string>;
+        setError(b.detail || b.error || `HTTP ${res.status}`);
         setLoading(false);
         return;
       }

@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.4.1",
+    "@supabase/supabase-js": "^2.98.0",
     "express": "^4.21.0",
     "lucide-react": "^0.344.0",
     "prisma": "^6.4.1",

@@ -31,27 +31,9 @@ app.use((_req, res, next) => {
 });
 
 // --------------- Health check ---------------
-// Shared DB-check helper — used by /health and /api/db-check
-let prismaClient = null;
-async function checkDb() {
-  try {
-    if (!prismaClient) {
-      const { prisma } = await import('../backend/dist/lib/prisma.js');
-      prismaClient = prisma;
-    }
-    await prismaClient.$queryRaw`SELECT 1`;
-    return 'ok';
-  } catch (err) {
-    console.error('DB check failed:', err.message);
-    return 'error';
-  }
-}
-
 app.get('/health', async (_req, res) => {
-  const db = await checkDb();
   res.json({
     status: 'ok',
-    db,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   });
@@ -59,21 +41,14 @@ app.get('/health', async (_req, res) => {
 
 // --------------- API routes ---------------
 app.get('/api/health', async (_req, res) => {
-  const db = await checkDb();
   res.json({
     status: 'ok',
-    db,
     env: {
-      DATABASE_URL_SET: !!process.env.DATABASE_URL,
+      SUPABASE_URL_SET: !!process.env.VITE_SUPABASE_URL,
       NODE_ENV: process.env.NODE_ENV || 'not set',
       PORT: process.env.PORT || 'not set',
     },
   });
-});
-
-app.get('/api/db-check', async (_req, res) => {
-  const db = await checkDb();
-  res.json({ db });
 });
 
 app.use('/api/seo-intelligence', seoIntelligenceRouter);
@@ -83,7 +58,7 @@ app.use('/api/unified-audit', unifiedAuditRouter);
 
 // Phase 1: DB-backed audit routes (loaded from compiled backend)
 try {
-  const { auditRunsRouter } = await import('../backend/dist/routes/auditRuns.js');
+  const { auditRunsRouter } = await import('../backend/dist/routes/auditRunsSimple.js');
   app.use('/api', auditRunsRouter);
   console.log('Phase 1 audit routes loaded');
 } catch (err) {

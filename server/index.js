@@ -76,20 +76,21 @@ app.all('/api/*', (req, res) => {
 });
 
 // --------------- Static files (Vite build output) ---------------
-// Only serve static files in production or if dist exists
+// Only serve static files in production
 import { existsSync } from 'fs';
 const distPath = join(__dirname, '..', 'dist');
+const isProduction = process.env.NODE_ENV === 'production';
 
-if (existsSync(distPath)) {
+if (isProduction && existsSync(distPath)) {
   app.use(express.static(distPath));
 
   // SPA fallback - serve index.html for all non-API routes
   app.get('*', (_req, res) => {
     res.sendFile(join(distPath, 'index.html'));
   });
-  console.log('Serving static files from:', distPath);
+  console.log('Production mode: Serving static files from:', distPath);
 } else {
-  console.log('Static files not found, running in dev mode (Vite will serve frontend)');
+  console.log('Development mode: Vite will serve frontend on separate port');
 }
 
 // --------------- Start ---------------

@@ -47,4 +47,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
 # Push schema to DB (non-interactive, tolerant of failure) then start server
-CMD ["sh", "-c", "echo \"=== ENV CHECK ===\"; echo \"DATABASE_URL set: $(test -n \"$DATABASE_URL\" && echo YES || echo NO)\"; echo \"NODE_ENV: $NODE_ENV\"; echo \"================\"; npx prisma db push --skip-generate --accept-data-loss 2>&1 || echo 'WARN: prisma db push failed — server will start anyway'; exec node server/index.js"]
+CMD ["sh", "-c", "echo '=== ALL ENV VAR NAMES ==='; env | cut -d= -f1 | sort; echo '=== DATABASE_URL value (first 40 chars) ==='; echo \"$DATABASE_URL\" | head -c 40; echo; echo '========================'; npx prisma db push --skip-generate --accept-data-loss 2>&1 || echo 'WARN: prisma db push failed — server will start anyway'; exec node server/index.js"]

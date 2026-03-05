@@ -97,6 +97,6 @@ if (isProduction && existsSync(distPath)) {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on http://0.0.0.0:${PORT}`);
   console.log(`Health check: http://0.0.0.0:${PORT}/health`);
-  console.log(`DATABASE_URL set: ${!!process.env.DATABASE_URL}`);
+  console.log(`SUPABASE configured: ${!!(process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL)}`);
   console.log(`NODE_ENV: ${process.env.NODE_ENV}`);
 });

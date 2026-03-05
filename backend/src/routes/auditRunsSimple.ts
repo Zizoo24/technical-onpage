@@ -1,10 +1,13 @@
 /**
- * Simplified audit routes using Supabase client
+ * Audit routes — in-memory by default, optional Supabase persistence.
+ *
+ * POST /api/technical-analyzer/run   — run audit (returns results directly or auditRunId)
+ * GET  /api/audit-runs/:id/results   — poll results (DB mode only)
  */
 
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { supabase } from '../lib/supabase.js';
+import { getSupabase } from '../lib/supabase.js';
 import { runSiteChecks } from '../services/checks/siteChecks.js';
 import { runCanonicalCheck, detectPageType } from '../services/checks/page/canonicalCheck.js';
 import { runStructuredDataCheck } from '../services/checks/page/structuredDataCheck.js';
@@ -18,7 +21,8 @@ export const auditRunsRouter = Router();
 const PAGE_TIMEOUT = 15_000;
 const UA = 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)';
 
-// SSRF guard
+// ── SSRF guard ──────────────────────────────────────────────────
+
 const PRIVATE_RANGES = [
   /^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./,
   /^192\.168\./, /^169\.254\./, /^0\./, /^localhost$/i, /^\[::1\]$/,
@@ -33,7 +37,55 @@ function isSafeUrl(raw: string): boolean {
   } catch { return false; }
 }
 
-// POST /api/technical-analyzer/run
+// ── Shared: run all page checks for one URL ─────────────────────
+
+async function auditSingleUrl(
+  url: string,
+  seenTitles: Set<string>,
+): Promise<Record<string, unknown>> {
+  if (!isSafeUrl(url)) {
+    return { url, error: 'Blocked by SSRF guard', status: 'FAIL', recommendations: ['URL blocked by security policy'] };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PAGE_TIMEOUT);
+  let html = '', fetchOk = false, loadMs = 0;
+  const fetchStart = Date.now();
+  try {
+    const pageRes = await fetch(url, {
+      redirect: 'follow', signal: controller.signal,
+      headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' },
+    });
+    if (pageRes.ok) { html = await pageRes.text(); fetchOk = true; }
+  } finally { loadMs = Date.now() - fetchStart; clearTimeout(timer); }
+
+  if (!fetchOk || !html) {
+    return { url, error: 'Fetch failed', status: 'FAIL', recommendations: ['Page could not be fetched'] };
+  }
+
+  const pageType = detectPageType(url);
+  let canonical = null; try { canonical = runCanonicalCheck(html, url, pageType); } catch { /* */ }
+  let structuredData = null; try { structuredData = runStructuredDataCheck(html, pageType); } catch { /* */ }
+  let contentMeta = null; try { contentMeta = runContentMetaCheck(html, pageType, seenTitles); } catch { /* */ }
+  let pagination = null; try { pagination = runPaginationCheck(html, url, pageType, canonical?.canonicalUrl ?? null); } catch { /* */ }
+  let performance = null; try { performance = await runPerformanceCheck(url, html, loadMs); } catch { /* */ }
+
+  const toJson = (v: unknown) => JSON.parse(JSON.stringify(v));
+  const data: Record<string, unknown> = {
+    pageType,
+    canonical: canonical ? toJson(canonical) : null,
+    structuredData: structuredData ? toJson(structuredData) : null,
+    contentMeta: contentMeta ? toJson(contentMeta) : null,
+    pagination: pagination ? toJson(pagination) : null,
+    performance: performance ? toJson(performance) : null,
+  };
+  const scored = scoreResult(data as Parameters<typeof scoreResult>[0]);
+
+  return { url, data, status: scored.status, recommendations: scored.recommendations };
+}
+
+// ── Types ───────────────────────────────────────────────────────
+
 interface AnalyzerBody {
   homeUrl: string;
   articleUrl: string;
@@ -47,6 +99,8 @@ interface AnalyzerBody {
 }
 
 const SEED_TYPES = ['home', 'article', 'section', 'tag', 'search', 'author', 'video_article'] as const;
+
+// ── POST /api/technical-analyzer/run ────────────────────────────
 
 auditRunsRouter.post('/technical-analyzer/run', async (req: Request, res: Response) => {
   try {
@@ -66,28 +120,7 @@ auditRunsRouter.post('/technical-analyzer/run', async (req: Request, res: Respon
       return;
     }
 
-    // Upsert Site
-    let site;
-    const { data: existingSite } = await supabase
-      .from('sites')
-      .select('*')
-      .eq('domain', domain)
-      .maybeSingle();
-
-    if (existingSite) {
-      site = existingSite;
-    } else {
-      const { data: newSite, error: createError } = await supabase
-        .from('sites')
-        .insert({ domain, updated_at: new Date().toISOString() })
-        .select()
-        .single();
-
-      if (createError) throw createError;
-      site = newSite;
-    }
-
-    // Collect seed URLs
+    // Collect all seed URLs
     const urlMap: Record<string, string> = { home: body.homeUrl, article: body.articleUrl };
     if (body.optionalUrls) {
       for (const [type, url] of Object.entries(body.optionalUrls)) {
@@ -97,160 +130,170 @@ auditRunsRouter.post('/technical-analyzer/run', async (req: Request, res: Respon
       }
     }
 
-    // Delete old seeds and create new ones
-    await supabase.from('seed_urls').delete().eq('site_id', site.id);
-    const seedInserts = Object.values(urlMap).map(url => ({
-      site_id: site.id,
-      url,
-    }));
-    await supabase.from('seed_urls').insert(seedInserts);
+    // Check if Supabase is available
+    const supabase = getSupabase();
 
-    // Create audit run
-    const { data: auditRun, error: runError } = await supabase
-      .from('audit_runs')
-      .insert({ site_id: site.id, status: 'RUNNING' })
-      .select()
-      .single();
-
-    if (runError) throw runError;
-
-    // Return immediately
-    res.json({ siteId: site.id, auditRunId: auditRun.id });
-
-    // Run audit in background
-    (async () => {
+    if (supabase) {
+      // ── DB mode: persist and run in background ──
       try {
-        // Site checks
-        let siteChecks: unknown | null = null;
-        try {
-          siteChecks = await runSiteChecks(domain);
-        } catch (err: unknown) {
-          siteChecks = {
-            robots: { status: 'ERROR', httpStatus: 0, sitemapsFound: [],
-              notes: [`Failed: ${err instanceof Error ? err.message : 'unknown'}`] },
-            sitemap: { status: 'ERROR', discoveredFrom: 'none', validatedRoot: null,
-              type: null, errors: [`Failed: ${err instanceof Error ? err.message : 'unknown'}`],
-              warnings: [] },
-          };
+        // Upsert site
+        let site;
+        const { data: existingSite } = await supabase
+          .from('sites').select('*').eq('domain', domain).maybeSingle();
+
+        if (existingSite) {
+          site = existingSite;
+        } else {
+          const { data: newSite, error: createError } = await supabase
+            .from('sites').insert({ domain, updated_at: new Date().toISOString() }).select().single();
+          if (createError) throw createError;
+          site = newSite;
         }
 
-        await supabase
-          .from('audit_runs')
-          .update({ site_checks: siteChecks })
-          .eq('id', auditRun.id);
+        // Replace seed URLs
+        await supabase.from('seed_urls').delete().eq('site_id', site.id);
+        await supabase.from('seed_urls').insert(
+          Object.values(urlMap).map(url => ({ site_id: site.id, url }))
+        );
 
-        // Get seed URLs
-        const { data: seedUrls } = await supabase
-          .from('seed_urls')
-          .select('*')
-          .eq('site_id', site.id);
+        // Create audit run
+        const { data: auditRun, error: runError } = await supabase
+          .from('audit_runs').insert({ site_id: site.id, status: 'RUNNING' }).select().single();
+        if (runError) throw runError;
 
-        const seenTitles = new Set<string>();
+        // Return immediately
+        res.json({ siteId: site.id, auditRunId: auditRun.id });
 
-        for (const seed of seedUrls || []) {
+        // Fire-and-forget background audit
+        (async () => {
           try {
-            if (!isSafeUrl(seed.url)) {
-              await supabase.from('audit_results').insert({
-                audit_run_id: auditRun.id,
-                url: seed.url,
-                data: { error: 'Blocked by SSRF guard' },
-                status: 'FAIL',
-                recommendations: ['URL blocked by security policy'],
-              });
-              continue;
+            let siteChecks: unknown = null;
+            try { siteChecks = await runSiteChecks(domain); } catch (err: unknown) {
+              siteChecks = {
+                robots: { status: 'ERROR', httpStatus: 0, sitemapsFound: [],
+                  notes: [`Failed: ${err instanceof Error ? err.message : 'unknown'}`] },
+                sitemap: { status: 'ERROR', discoveredFrom: 'none', validatedRoot: null,
+                  type: null, errors: [`Failed: ${err instanceof Error ? err.message : 'unknown'}`], warnings: [] },
+              };
             }
 
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), PAGE_TIMEOUT);
-            let html = '', fetchOk = false, loadMs = 0;
-            const fetchStart = Date.now();
+            await supabase.from('audit_runs').update({ site_checks: siteChecks }).eq('id', auditRun.id);
 
-            try {
-              const pageRes = await fetch(seed.url, {
-                redirect: 'follow', signal: controller.signal,
-                headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' },
-              });
-              if (pageRes.ok) { html = await pageRes.text(); fetchOk = true; }
-            } finally {
-              loadMs = Date.now() - fetchStart;
-              clearTimeout(timer);
+            const { data: seedUrls } = await supabase.from('seed_urls').select('*').eq('site_id', site.id);
+            const seenTitles = new Set<string>();
+
+            for (const seed of seedUrls || []) {
+              try {
+                const result = await auditSingleUrl(seed.url, seenTitles);
+                await supabase.from('audit_results').insert({
+                  audit_run_id: auditRun.id, url: seed.url,
+                  data: (result.data ?? { error: result.error }) as Record<string, unknown>,
+                  status: (result.status as string) ?? 'FAIL',
+                  recommendations: Array.isArray(result.recommendations) && result.recommendations.length > 0
+                    ? result.recommendations : null,
+                });
+              } catch (err: unknown) {
+                await supabase.from('audit_results').insert({
+                  audit_run_id: auditRun.id, url: seed.url,
+                  data: { error: err instanceof Error ? err.message : 'unknown' },
+                  status: 'FAIL', recommendations: ['Audit failed for this URL'],
+                });
+              }
             }
 
-            if (!fetchOk || !html) {
-              await supabase.from('audit_results').insert({
-                audit_run_id: auditRun.id,
-                url: seed.url,
-                data: { error: 'Fetch failed' },
-                status: 'FAIL',
-                recommendations: ['Page could not be fetched'],
-              });
-              continue;
-            }
-
-            const pageType = detectPageType(seed.url);
-            let canonical = null; try { canonical = runCanonicalCheck(html, seed.url, pageType); } catch { /* */ }
-            let structuredData = null; try { structuredData = runStructuredDataCheck(html, pageType); } catch { /* */ }
-            let contentMeta = null; try { contentMeta = runContentMetaCheck(html, pageType, seenTitles); } catch { /* */ }
-            let pagination = null; try { pagination = runPaginationCheck(html, seed.url, pageType, canonical?.canonicalUrl ?? null); } catch { /* */ }
-            let performance = null; try { performance = await runPerformanceCheck(seed.url, html, loadMs); } catch { /* */ }
-
-            const data = {
-              pageType,
-              canonical,
-              structuredData,
-              contentMeta,
-              pagination,
-              performance,
-            };
-
-            const scored = scoreResult(data);
-            await supabase.from('audit_results').insert({
-              audit_run_id: auditRun.id,
-              url: seed.url,
-              data,
-              status: scored.status,
-              recommendations: scored.recommendations.length > 0 ? scored.recommendations : null,
-            });
-          } catch (err: unknown) {
-            await supabase.from('audit_results').insert({
-              audit_run_id: auditRun.id,
-              url: seed.url,
-              data: { error: err instanceof Error ? err.message : 'unknown' },
-              status: 'FAIL',
-              recommendations: ['Audit failed for this URL'],
-            });
+            await supabase.from('audit_runs')
+              .update({ status: 'COMPLETED', finished_at: new Date().toISOString() })
+              .eq('id', auditRun.id);
+          } catch (err) {
+            console.error('Background audit error:', err);
+            await supabase.from('audit_runs')
+              .update({ status: 'FAILED', finished_at: new Date().toISOString() })
+              .eq('id', auditRun.id).then(() => {}, () => {});
           }
-        }
-
-        await supabase
-          .from('audit_runs')
-          .update({ status: 'COMPLETED', finished_at: new Date().toISOString() })
-          .eq('id', auditRun.id);
-      } catch (err) {
-        console.error('Background audit error:', err);
-        await supabase
-          .from('audit_runs')
-          .update({ status: 'FAILED', finished_at: new Date().toISOString() })
-          .eq('id', auditRun.id)
-          .then(() => {}, () => {});
+        })();
+        return;
+      } catch (dbErr) {
+        // DB failed — fall through to in-memory mode
+        console.warn('[audit] Supabase call failed, falling back to in-memory:', dbErr);
       }
-    })();
+    }
+
+    // ── In-memory mode: run synchronously, return results directly ──
+    console.log('[audit] Running in-memory mode for', domain);
+
+    // Site-level checks
+    let siteChecks: Record<string, unknown> | null = null;
+    try {
+      const checks = await runSiteChecks(domain);
+      siteChecks = JSON.parse(JSON.stringify(checks));
+    } catch (err: unknown) {
+      siteChecks = {
+        robots: { status: 'ERROR', httpStatus: 0, sitemapsFound: [],
+          notes: [`Site checks failed: ${err instanceof Error ? err.message : 'unknown'}`] },
+        sitemap: { status: 'ERROR', discoveredFrom: 'none', validatedRoot: null, type: null,
+          errors: [`Site checks failed: ${err instanceof Error ? err.message : 'unknown'}`], warnings: [] },
+      };
+    }
+
+    // Per-URL audits
+    const seenTitles = new Set<string>();
+    const results: Record<string, unknown>[] = [];
+
+    for (const [type, url] of Object.entries(urlMap)) {
+      try {
+        const result = await auditSingleUrl(url, seenTitles);
+        results.push({ ...result, seedType: type });
+      } catch (err: unknown) {
+        results.push({
+          url, seedType: type, status: 'FAIL',
+          error: err instanceof Error ? err.message : 'unknown',
+          recommendations: ['Audit failed for this URL'],
+        });
+      }
+    }
+
+    // Compute site-level recommendations
+    const siteRecs = scoreSiteChecks(siteChecks as Parameters<typeof scoreSiteChecks>[0]);
+
+    // Group results by pageType
+    const grouped: Record<string, unknown[]> = {};
+    for (const r of results) {
+      const data = r.data as Record<string, unknown> | null;
+      const pageType = (data?.pageType as string) ?? (r.seedType as string) ?? 'unknown';
+      if (!grouped[pageType]) grouped[pageType] = [];
+      grouped[pageType].push(r);
+    }
+
+    res.json({
+      mode: 'in-memory',
+      status: 'COMPLETED',
+      domain,
+      siteChecks,
+      siteRecommendations: siteRecs,
+      resultsByType: grouped,
+      results,
+    });
   } catch (err: unknown) {
     console.error('POST technical-analyzer/run error:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    res.status(500).json({ error: 'Internal server error', detail: message });
   }
 });
 
-// GET /api/audit-runs/:id/results
+// ── GET /api/audit-runs/:id/results ─────────────────────────────
+
 auditRunsRouter.get('/audit-runs/:id/results', async (req: Request, res: Response) => {
   try {
+    const supabase = getSupabase();
+    if (!supabase) {
+      res.status(503).json({ error: 'Database not configured. Results were returned directly in the run response.' });
+      return;
+    }
+
     const id = req.params['id'] as string;
 
     const { data: run, error: runError } = await supabase
-      .from('audit_runs')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle();
+      .from('audit_runs').select('*').eq('id', id).maybeSingle();
 
     if (runError) throw runError;
     if (!run) {
@@ -259,9 +302,7 @@ auditRunsRouter.get('/audit-runs/:id/results', async (req: Request, res: Respons
     }
 
     const { data: results, error: resultsError } = await supabase
-      .from('audit_results')
-      .select('*')
-      .eq('audit_run_id', id);
+      .from('audit_results').select('*').eq('audit_run_id', id);
 
     if (resultsError) throw resultsError;
 
@@ -273,7 +314,7 @@ auditRunsRouter.get('/audit-runs/:id/results', async (req: Request, res: Respons
       grouped[pageType].push(r);
     }
 
-    const siteRecs = scoreSiteChecks(run.site_checks as Record<string, unknown> | null);
+    const siteRecs = scoreSiteChecks(run.site_checks as Parameters<typeof scoreSiteChecks>[0]);
 
     res.json({
       id: run.id,

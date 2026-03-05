@@ -292,6 +292,15 @@ const SEED_TYPES = ['home', 'article', 'section', 'tag', 'search', 'author', 'vi
 
 auditRunsRouter.post('/technical-analyzer/run', async (req: Request, res: Response) => {
   try {
+    // Guard: check DATABASE_URL is configured
+    if (!process.env.DATABASE_URL) {
+      res.status(503).json({
+        error: 'Database not configured',
+        detail: 'DATABASE_URL environment variable is not set. Add it in your hosting dashboard.',
+      });
+      return;
+    }
+
     const body = req.body as AnalyzerBody;
     if (!body.homeUrl || !body.articleUrl) {
       res.status(400).json({ error: 'homeUrl and articleUrl are required' });

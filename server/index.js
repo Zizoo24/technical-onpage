@@ -31,15 +31,43 @@ app.use((_req, res, next) => {
 });
 
 // --------------- Health check ---------------
-app.get('/health', (_req, res) => {
+// Shared DB-check helper — used by /health and /api/db-check
+let prismaClient = null;
+async function checkDb() {
+  try {
+    if (!prismaClient) {
+      const { prisma } = await import('../backend/dist/lib/prisma.js');
+      prismaClient = prisma;
+    }
+    await prismaClient.$queryRaw`SELECT 1`;
+    return 'ok';
+  } catch (err) {
+    console.error('DB check failed:', err.message);
+    return 'error';
+  }
+}
+
+app.get('/health', async (_req, res) => {
+  const db = await checkDb();
   res.json({
     status: 'ok',
+    db,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   });
 });
 
 // --------------- API routes ---------------
+app.get('/api/health', async (_req, res) => {
+  const db = await checkDb();
+  res.json({ status: 'ok', db });
+});
+
+app.get('/api/db-check', async (_req, res) => {
+  const db = await checkDb();
+  res.json({ db });
+});
+
 app.use('/api/seo-intelligence', seoIntelligenceRouter);
 app.use('/api/seo-site-crawler', seoCrawlerRouter);
 app.use('/api/news-seo', newsSeoRouter);

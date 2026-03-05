@@ -432,7 +432,38 @@ export default function SEOAgent() {
         return;
       }
 
-      const { auditRunId } = await res.json() as { siteId: string; auditRunId: string };
+      const json = await res.json() as Record<string, unknown>;
+
+      // In-memory mode: results returned directly (no DB)
+      if (json.mode === 'in-memory') {
+        const results = (json.results as Record<string, unknown>[]).map((r, i) => ({
+          id: `mem-${i}`,
+          url: r.url as string,
+          status: (r.status as string) ?? null,
+          data: (r.data as Record<string, unknown>) ?? null,
+          recommendations: (r.recommendations as Recommendation[]) ?? null,
+        }));
+        const grouped: Record<string, AuditResultRow[]> = {};
+        for (const r of results) {
+          const pt = (r.data?.pageType as string) ?? 'unknown';
+          if (!grouped[pt]) grouped[pt] = [];
+          grouped[pt].push(r);
+        }
+        setRunData({
+          id: 'in-memory',
+          status: json.status as string,
+          siteChecks: (json.siteChecks as Record<string, unknown>) ?? null,
+          siteRecommendations: (json.siteRecommendations as Recommendation[]) ?? [],
+          resultsByType: grouped,
+          results,
+        });
+        setLoading(false);
+        setProgress('');
+        return;
+      }
+
+      // DB mode: poll for results
+      const { auditRunId } = json as { siteId: string; auditRunId: string };
       setProgress('Audit started — checking site & pages...');
       pollRef.current = setTimeout(() => pollResults(auditRunId, Date.now()), POLL_INTERVAL);
     } catch {

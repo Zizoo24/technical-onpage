@@ -7,22 +7,19 @@
     "dev": "node --env-file=.env server/index.js & vite --host 0.0.0.0",
     "dev:server": "node --env-file=.env server/index.js",
     "dev:start": "node --env-file=.env server/index.js",
-    "build": "prisma generate && vite build && tsc -p backend/tsconfig.json",
+    "build": "vite build && tsc -p backend/tsconfig.json",
     "build:backend": "tsc -p backend/tsconfig.json",
-    "start": "prisma db push --skip-generate --accept-data-loss || true; node server/index.js",
+    "start": "node server/index.js",
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "typecheck:backend": "tsc --noEmit -p backend/tsconfig.json",
-    "db:migrate": "prisma migrate deploy",
-    "db:generate": "prisma generate"
+    "db:migrate": "echo 'Using Supabase migrations now'"
   },
   "dependencies": {
-    "@prisma/client": "^6.4.1",
     "@supabase/supabase-js": "^2.98.0",
     "express": "^4.21.0",
     "lucide-react": "^0.344.0",
-    "prisma": "^6.4.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

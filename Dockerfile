@@ -40,9 +40,11 @@ EXPOSE 3000
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# Dummy fallback so Prisma schema validation passes; overridden at runtime by platform env
+ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
 # Push schema to DB (non-interactive, tolerant of failure) then start server
-CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss 2>&1 || echo 'WARN: prisma db push failed — server will start anyway'; exec node server/index.js"]
+CMD ["sh", "-c", "echo \"=== ENV CHECK ===\"; echo \"DATABASE_URL set: $(test -n \"$DATABASE_URL\" && echo YES || echo NO)\"; echo \"NODE_ENV: $NODE_ENV\"; echo \"================\"; npx prisma db push --skip-generate --accept-data-loss 2>&1 || echo 'WARN: prisma db push failed — server will start anyway'; exec node server/index.js"]

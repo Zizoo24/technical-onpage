@@ -436,13 +436,25 @@ export default function SEOAgent() {
 
       // In-memory mode: results returned directly (no DB)
       if (json.mode === 'in-memory') {
-        const results = (json.results as Record<string, unknown>[]).map((r, i) => ({
-          id: `mem-${i}`,
-          url: r.url as string,
-          status: (r.status as string) ?? null,
-          data: (r.data as Record<string, unknown>) ?? null,
-          recommendations: (r.recommendations as Recommendation[]) ?? null,
-        }));
+        const rawResults = json.results as Record<string, unknown>[];
+        const results = rawResults.map((r, i) => {
+          // Build a data object that always has pageType for display
+          const innerData = (r.data as Record<string, unknown>) ?? null;
+          const seedType = (r.seedType as string) ?? null;
+          const pageType = innerData?.pageType ?? seedType ?? 'unknown';
+          const data = innerData
+            ? { ...innerData, pageType }
+            : r.error
+              ? { pageType, error: r.error }
+              : null;
+          return {
+            id: `mem-${i}`,
+            url: r.url as string,
+            status: (r.status as string) ?? null,
+            data,
+            recommendations: (r.recommendations as Recommendation[]) ?? null,
+          };
+        });
         const grouped: Record<string, AuditResultRow[]> = {};
         for (const r of results) {
           const pt = (r.data?.pageType as string) ?? 'unknown';

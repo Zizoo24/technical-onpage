@@ -1,10 +1,25 @@
-import { createClient } from '@supabase/supabase-js';
+/**
+ * Optional Supabase client — returns null if env vars are not set.
+ */
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.VITE_SUPABASE_URL;
-const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY;
+let _client: SupabaseClient | null = null;
+let _checked = false;
 
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error('Missing Supabase environment variables');
+export function getSupabase(): SupabaseClient | null {
+  if (_checked) return _client;
+  _checked = true;
+
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+  if (url && key) {
+    _client = createClient(url, key);
+    console.log('[supabase] Client initialized');
+  } else {
+    console.log('[supabase] No SUPABASE_URL/SUPABASE_ANON_KEY — running in-memory mode');
+    _client = null;
+  }
+
+  return _client;
 }
-
-export const supabase = createClient(supabaseUrl, supabaseKey);

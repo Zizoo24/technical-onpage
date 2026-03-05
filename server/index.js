@@ -60,7 +60,15 @@ app.get('/health', async (_req, res) => {
 // --------------- API routes ---------------
 app.get('/api/health', async (_req, res) => {
   const db = await checkDb();
-  res.json({ status: 'ok', db });
+  res.json({
+    status: 'ok',
+    db,
+    env: {
+      DATABASE_URL_SET: !!process.env.DATABASE_URL,
+      NODE_ENV: process.env.NODE_ENV || 'not set',
+      PORT: process.env.PORT || 'not set',
+    },
+  });
 });
 
 app.get('/api/db-check', async (_req, res) => {
@@ -105,4 +113,6 @@ app.get('*', (_req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on http://0.0.0.0:${PORT}`);
   console.log(`Health check: http://0.0.0.0:${PORT}/health`);
+  console.log(`DATABASE_URL set: ${!!process.env.DATABASE_URL}`);
+  console.log(`NODE_ENV: ${process.env.NODE_ENV}`);
 });

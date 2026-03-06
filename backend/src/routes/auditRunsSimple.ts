@@ -42,6 +42,7 @@ function isSafeUrl(raw: string): boolean {
 async function auditSingleUrl(
   url: string,
   seenTitles: Set<string>,
+  seedType?: string,
 ): Promise<Record<string, unknown>> {
   if (!isSafeUrl(url)) {
     return { url, error: 'Blocked by SSRF guard', status: 'FAIL', recommendations: ['URL blocked by security policy'] };
@@ -63,7 +64,11 @@ async function auditSingleUrl(
     return { url, error: 'Fetch failed', status: 'FAIL', recommendations: ['Page could not be fetched'] };
   }
 
-  const pageType = detectPageType(url);
+  // Prefer the explicit seed type if it's a known PageType, otherwise auto-detect
+  const VALID_TYPES = ['home', 'section', 'article', 'search', 'tag', 'author', 'video_article'] as const;
+  const pageType = (seedType && (VALID_TYPES as readonly string[]).includes(seedType))
+    ? (seedType as typeof VALID_TYPES[number])
+    : detectPageType(url);
   let canonical = null; try { canonical = runCanonicalCheck(html, url, pageType); } catch { /* */ }
   let structuredData = null; try { structuredData = runStructuredDataCheck(html, pageType); } catch { /* */ }
   let contentMeta = null; try { contentMeta = runContentMetaCheck(html, pageType, seenTitles); } catch { /* */ }
@@ -241,7 +246,7 @@ auditRunsRouter.post('/technical-analyzer/run', async (req: Request, res: Respon
 
     for (const [type, url] of Object.entries(urlMap)) {
       try {
-        const result = await auditSingleUrl(url, seenTitles);
+        const result = await auditSingleUrl(url, seenTitles, type);
         results.push({ ...result, seedType: type });
       } catch (err: unknown) {
         results.push({

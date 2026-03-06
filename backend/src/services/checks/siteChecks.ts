@@ -125,6 +125,60 @@ function lastmodPresence(text: string, urlCount: number): number {
   return Math.round((count / urlCount) * 100);
 }
 
+// ── Sitemap standards validation ─────────────────────────────
+
+interface SitemapStandards {
+  hasNamespace: boolean;
+  invalidLocs: string[];
+  invalidLastmods: string[];
+  emptyLocs: number;
+}
+
+function validateSitemapStandards(text: string): SitemapStandards {
+  const result: SitemapStandards = {
+    hasNamespace: false,
+    invalidLocs: [],
+    invalidLastmods: [],
+    emptyLocs: 0,
+  };
+
+  // Check for proper XML namespace
+  result.hasNamespace = /xmlns\s*=\s*["']http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9["']/i.test(text);
+
+  // Validate <loc> entries — must be valid absolute URLs
+  const locRe = /<loc[^>]*>([\s\S]*?)<\/loc>/gi;
+  let m: RegExpExecArray | null;
+  let locCount = 0;
+  while ((m = locRe.exec(text)) !== null) {
+    const loc = m[1].trim();
+    locCount++;
+    if (!loc) {
+      result.emptyLocs++;
+    } else {
+      try {
+        const u = new URL(loc);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+          result.invalidLocs.push(loc);
+        }
+      } catch {
+        if (result.invalidLocs.length < 5) result.invalidLocs.push(loc);
+      }
+    }
+  }
+
+  // Validate <lastmod> entries — must be ISO 8601
+  const lastmodRe = /<lastmod[^>]*>([\s\S]*?)<\/lastmod>/gi;
+  while ((m = lastmodRe.exec(text)) !== null) {
+    const val = m[1].trim();
+    // ISO 8601: YYYY-MM-DD or YYYY-MM-DDThh:mm:ss+00:00 etc.
+    if (!/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?([+-]\d{2}:\d{2}|Z)?)?$/.test(val)) {
+      if (result.invalidLastmods.length < 5) result.invalidLastmods.push(val);
+    }
+  }
+
+  return result;
+}
+
 // ── Types ───────────────────────────────────────────────────────
 
 type RobotsStatus = 'FOUND' | 'NOT_FOUND' | 'BLOCKED' | 'ERROR';
@@ -155,6 +209,7 @@ interface SitemapResult {
   childChecked?: ChildCheck[];
   urlCount?: number;
   lastmodPct?: number;
+  standards?: SitemapStandards;
   errors: string[];
   warnings: string[];
 }
@@ -254,6 +309,23 @@ async function validateSitemap(
   result.validatedRoot = root;
   result.type = root;
   result.status = 'VALID';
+
+  // Run standards validation on the sitemap XML
+  const standards = validateSitemapStandards(res.text);
+  result.standards = standards;
+
+  if (!standards.hasNamespace) {
+    result.warnings.push('Sitemap missing standard XML namespace (xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")');
+  }
+  if (standards.invalidLocs.length > 0) {
+    result.warnings.push(`${standards.invalidLocs.length} <loc> entries have invalid URLs (e.g. "${standards.invalidLocs[0]}")`);
+  }
+  if (standards.emptyLocs > 0) {
+    result.warnings.push(`${standards.emptyLocs} <loc> entries are empty`);
+  }
+  if (standards.invalidLastmods.length > 0) {
+    result.warnings.push(`${standards.invalidLastmods.length} <lastmod> entries not in ISO 8601 format (e.g. "${standards.invalidLastmods[0]}")`);
+  }
 
   if (root === 'urlset') {
     const urlCount = countUrlEntries(res.text);

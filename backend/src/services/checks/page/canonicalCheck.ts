@@ -2,7 +2,7 @@
  * Canonical tag check for a single page.
  */
 
-export type PageType = 'home' | 'section' | 'article' | 'search' | 'tag' | 'unknown';
+export type PageType = 'home' | 'section' | 'article' | 'search' | 'tag' | 'author' | 'video_article' | 'unknown';
 
 export interface CanonicalResult {
   exists: boolean;
@@ -31,6 +31,8 @@ export function detectPageType(url: string): PageType {
   if (path === '/' || path === '') return 'home';
   if (/\/(search|suche|buscar)\b/.test(path)) return 'search';
   if (/\/(tag|tags|topic|label)\b/.test(path)) return 'tag';
+  if (/\/(author|authors|journalist|columnist|reporter)\b/.test(path)) return 'author';
+  if (/\/(video|videos|watch)\b/.test(path)) return 'video_article';
   // article heuristics: path has date-like segments or a slug with dashes
   if (/\/\d{4}\/\d{2}\//.test(path) || /\/[a-z0-9]+-[a-z0-9]+-[a-z0-9]+/.test(path)) return 'article';
   // remaining paths with 1-2 segments are likely sections
@@ -87,7 +89,7 @@ export function runCanonicalCheck(
   try {
     const cu = new URL(m[1]);
     if (cu.search && !allowQuery) {
-      const typesRequiringClean: PageType[] = ['home', 'section', 'article', 'search', 'tag'];
+      const typesRequiringClean: PageType[] = ['home', 'section', 'article', 'search', 'tag', 'author', 'video_article'];
       if (typesRequiringClean.includes(pageType)) {
         result.queryIgnored = false;
         result.notes.push(`Canonical contains query string (${cu.search}) — should be clean for ${pageType} pages`);

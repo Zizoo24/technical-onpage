@@ -10,7 +10,7 @@ import type { PageType } from './page/canonicalCheck.js';
 // ── Types ───────────────────────────────────────────────────────
 
 export type Priority = 'P0' | 'P1' | 'P2';
-export type Area = 'canonical' | 'schema' | 'meta' | 'pagination' | 'performance' | 'sitemap' | 'robots';
+export type Area = 'canonical' | 'schema' | 'meta' | 'pagination' | 'performance' | 'sitemap' | 'robots' | 'social' | 'content' | 'news';
 
 export interface Recommendation {
   priority: Priority;
@@ -41,14 +41,28 @@ interface CheckData {
     status: string;
     typesFound: string[];
     missingFields: string[];
+    presentFields?: string[];
     notes: string[];
   } | null;
   contentMeta?: {
+    title?: string | null;
+    titleLen?: number;
     titleLenOk: boolean;
+    description?: string | null;
+    descLen?: number;
     descLenOk: boolean;
+    h1?: string | null;
+    h1Count?: number;
     h1Ok: boolean;
     robotsMeta: { noindex: boolean; nofollow: boolean };
     duplicateTitle: boolean;
+    wordCount?: number;
+    hasAuthorByline?: boolean;
+    hasPublishDate?: boolean;
+    hasMainImage?: boolean;
+    ogTags?: { title: string | null; image: string | null; type: string | null };
+    twitterTags?: { card: string | null; title: string | null; image: string | null };
+    hasViewport?: boolean;
     warnings: string[];
   } | null;
   pagination?: {
@@ -106,7 +120,7 @@ export function scoreResult(data: CheckData): ScoringResult {
         escalate('WARN');
         recs.push({
           priority: 'P1', area: 'canonical',
-          message: `Canonical URL does not match page URL`,
+          message: 'Canonical URL does not match page URL',
           fixHint: 'Ensure the canonical href matches the final URL of this page.',
         });
       }
@@ -149,6 +163,19 @@ export function scoreResult(data: CheckData): ScoringResult {
               priority: 'P1', area: 'schema',
               message: `Article schema missing required field: ${field}`,
               fixHint: `Add "${field}" to your NewsArticle/Article JSON-LD.`,
+            });
+          } else if (field === 'image' || field === 'author') {
+            escalate('WARN');
+            recs.push({
+              priority: 'P1', area: 'schema',
+              message: `Article schema missing: ${field}`,
+              fixHint: `Add "${field}" to your NewsArticle/Article JSON-LD.`,
+            });
+          } else if (field === 'dateModified' || field === 'publisher') {
+            recs.push({
+              priority: 'P2', area: 'schema',
+              message: `Article schema missing recommended field: ${field}`,
+              fixHint: `Add "${field}" to improve schema completeness.`,
             });
           }
         }
@@ -223,6 +250,62 @@ export function scoreResult(data: CheckData): ScoringResult {
         priority: 'P1', area: 'meta',
         message: 'Duplicate title detected across seed URLs in this audit',
         fixHint: 'Each page should have a unique <title> tag.',
+      });
+    }
+
+    // New checks: OG tags, Twitter, word count, author, viewport
+    if (pageType === 'article') {
+      if (!data.contentMeta.ogTags?.image) {
+        recs.push({
+          priority: 'P1', area: 'social',
+          message: 'Missing og:image tag',
+          fixHint: 'Add <meta property="og:image"> with a high-quality image (min 1200px wide).',
+        });
+      }
+      if (!data.contentMeta.ogTags?.title) {
+        recs.push({
+          priority: 'P2', area: 'social',
+          message: 'Missing og:title tag',
+          fixHint: 'Add <meta property="og:title"> for better social sharing.',
+        });
+      }
+      if (!data.contentMeta.twitterTags?.card) {
+        recs.push({
+          priority: 'P2', area: 'social',
+          message: 'Missing twitter:card tag',
+          fixHint: 'Add <meta name="twitter:card" content="summary_large_image">.',
+        });
+      }
+      if (data.contentMeta.wordCount !== undefined && data.contentMeta.wordCount < 300) {
+        escalate('WARN');
+        recs.push({
+          priority: 'P1', area: 'content',
+          message: `Thin content: only ${data.contentMeta.wordCount} words`,
+          fixHint: 'News articles should have at least 300 words for adequate coverage.',
+        });
+      }
+      if (data.contentMeta.hasAuthorByline === false) {
+        recs.push({
+          priority: 'P2', area: 'news',
+          message: 'No author byline detected on page',
+          fixHint: 'Add a visible author byline for E-E-A-T signals.',
+        });
+      }
+      if (data.contentMeta.hasPublishDate === false) {
+        recs.push({
+          priority: 'P1', area: 'news',
+          message: 'No visible publish date detected on page',
+          fixHint: 'Display a clear publish date — important for news content.',
+        });
+      }
+    }
+
+    if (data.contentMeta.hasViewport === false) {
+      escalate('WARN');
+      recs.push({
+        priority: 'P1', area: 'meta',
+        message: 'Missing viewport meta tag',
+        fixHint: 'Add <meta name="viewport" content="width=device-width, initial-scale=1">.',
       });
     }
   }

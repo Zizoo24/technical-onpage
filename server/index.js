@@ -1,6 +1,6 @@
 import express from 'express';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { seoIntelligenceRouter } from './routes/seo-intelligence.js';
 import { seoCrawlerRouter } from './routes/seo-site-crawler.js';
 import { newsSeoRouter } from './routes/news-seo.js';
@@ -89,7 +89,7 @@ app.all('/api/*', (req, res) => {
 
 // --------------- Static files (Vite build output) ---------------
 // Only serve static files in production
-import { existsSync } from 'fs';
+import { existsSync } from 'node:fs';
 const distPath = join(__dirname, '..', 'dist');
 const isProduction = process.env.NODE_ENV === 'production';
 

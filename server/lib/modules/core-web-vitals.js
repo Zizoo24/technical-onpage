@@ -9,6 +9,7 @@
  *   - Performance scoring: Good / Needs Improvement / Poor
  *   - Optional Lighthouse/PageSpeed API integration
  */
+import process from 'node:process';
 
 const PAGESPEED_API_KEY = process.env.PAGESPEED_API_KEY || '';
 const PAGESPEED_TIMEOUT = 30000;

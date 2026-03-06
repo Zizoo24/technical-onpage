@@ -1,3 +1,4 @@
+import process from 'node:process';
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -269,6 +269,246 @@ function buildArticleChecklist(row: AuditResultRow): CheckGroup[] {
   return groups;
 }
 
+function buildAuthorChecklist(row: AuditResultRow): CheckGroup[] {
+  const data = row.data;
+  if (!data) return [];
+  const canonical = data.canonical as Record<string, unknown> | null;
+  const schema = data.structuredData as Record<string, unknown> | null;
+  const meta = data.contentMeta as Record<string, unknown> | null;
+  const perf = data.performance as Record<string, unknown> | null;
+
+  const groups: CheckGroup[] = [];
+
+  // 1. Indexability
+  const idx: CheckItem[] = [];
+  if (meta) {
+    const rm = meta.robotsMeta as Record<string, unknown> | null;
+    idx.push(ck('indexable', 'Page is indexable', rm?.noindex ? 'fail' : 'pass', rm?.noindex ? 'noindex directive found' : 'No noindex directive', 'critical'));
+  }
+  if (canonical) {
+    idx.push(ck('canonical_exists', 'Canonical tag exists', canonical.exists ? 'pass' : 'fail', canonical.exists ? `${String(canonical.canonicalUrl || '')}` : 'No canonical tag found', 'critical'));
+    if (canonical.exists) {
+      idx.push(ck('canonical_match', 'Canonical matches author page URL', canonical.match ? 'pass' : 'warn', canonical.match ? 'Self-referencing canonical' : 'Canonical differs from page URL', 'critical'));
+    }
+  }
+  if (idx.length > 0) groups.push({ id: 'indexability', title: 'Indexability', icon: <FileSearch className="w-4 h-4" />, checks: idx });
+
+  // 2. Content & Metadata
+  const metaGroup: CheckItem[] = [];
+  if (meta) {
+    metaGroup.push(ck('title', 'Meta title', meta.titleLenOk ? 'pass' : 'warn',
+      meta.title ? `"${String(meta.title).substring(0, 60)}" (${(meta.titleLen as number) ?? 0} chars)` : 'Missing <title>', meta.title ? 'warning' : 'critical'));
+    metaGroup.push(ck('description', 'Meta description', meta.descLenOk ? 'pass' : 'warn',
+      meta.description ? `${(meta.descLen as number) ?? 0} chars` : 'Missing meta description', 'warning'));
+    metaGroup.push(ck('h1', 'H1 heading', meta.h1Ok ? 'pass' : 'warn',
+      meta.h1 ? `"${String(meta.h1).substring(0, 60)}"` : 'No H1 found', 'warning'));
+  }
+  if (metaGroup.length > 0) groups.push({ id: 'metadata', title: 'Content & Metadata', icon: <FileText className="w-4 h-4" />, checks: metaGroup });
+
+  // 3. Structured Data (Author / Person)
+  const sd: CheckItem[] = [];
+  if (schema) {
+    const types = (schema.typesFound as string[]) ?? [];
+    const present = (schema.presentFields as string[]) ?? [];
+    const hasPerson = types.includes('Person');
+    const hasProfile = types.includes('ProfilePage');
+    sd.push(ck('person_schema', 'Person schema', hasPerson ? 'pass' : 'warn', hasPerson ? 'Person schema found' : 'No Person schema', 'warning'));
+    if (hasProfile) sd.push(ck('profile_page', 'ProfilePage schema', 'pass', 'ProfilePage found', 'info'));
+
+    if (hasPerson) {
+      for (const field of ['name', 'url', 'image', 'jobTitle', 'sameAs'] as const) {
+        const key = `Person.${field}`;
+        const has = present.includes(key);
+        sd.push(ck(`person_${field}`, `Person: ${field}`, has ? 'pass' : field === 'name' ? 'warn' : 'info',
+          has ? `${field} present` : `Missing ${field}`, field === 'name' ? 'warning' : 'info'));
+      }
+    }
+
+    const hasBreadcrumb = types.includes('BreadcrumbList') || present.includes('BreadcrumbList');
+    sd.push(ck('breadcrumb', 'BreadcrumbList schema', hasBreadcrumb ? 'pass' : 'info', hasBreadcrumb ? 'BreadcrumbList found' : 'No BreadcrumbList', 'info'));
+  }
+  if (sd.length > 0) groups.push({ id: 'structured_data', title: 'Structured Data', icon: <Code2 className="w-4 h-4" />, checks: sd });
+
+  // 4. Performance
+  const perfGroup: CheckItem[] = [];
+  if (perf) {
+    const loadMs = perf.loadMs as number | null;
+    if (loadMs != null) perfGroup.push(ck('load_time', 'Page load time', loadMs < 3000 ? 'pass' : loadMs < 5000 ? 'warn' : 'fail', `${loadMs}ms`, loadMs >= 5000 ? 'critical' : 'warning'));
+  }
+  if (meta) perfGroup.push(ck('viewport', 'Mobile viewport', meta.hasViewport ? 'pass' : 'warn', meta.hasViewport ? 'Viewport present' : 'Missing viewport', 'warning'));
+  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
+
+  return groups;
+}
+
+function buildVideoChecklist(row: AuditResultRow): CheckGroup[] {
+  const data = row.data;
+  if (!data) return [];
+  const canonical = data.canonical as Record<string, unknown> | null;
+  const schema = data.structuredData as Record<string, unknown> | null;
+  const meta = data.contentMeta as Record<string, unknown> | null;
+  const perf = data.performance as Record<string, unknown> | null;
+
+  const groups: CheckGroup[] = [];
+
+  // 1. Indexability
+  const idx: CheckItem[] = [];
+  if (meta) {
+    const rm = meta.robotsMeta as Record<string, unknown> | null;
+    idx.push(ck('indexable', 'Page is indexable', rm?.noindex ? 'fail' : 'pass', rm?.noindex ? 'noindex directive found' : 'No noindex directive', 'critical'));
+  }
+  if (canonical) {
+    idx.push(ck('canonical_exists', 'Canonical tag exists', canonical.exists ? 'pass' : 'fail', canonical.exists ? `${String(canonical.canonicalUrl || '')}` : 'No canonical tag found', 'critical'));
+    if (canonical.exists) {
+      idx.push(ck('canonical_match', 'Canonical matches video page URL', canonical.match ? 'pass' : 'warn', canonical.match ? 'Self-referencing canonical' : 'Canonical differs from page URL', 'critical'));
+    }
+  }
+  if (idx.length > 0) groups.push({ id: 'indexability', title: 'Indexability', icon: <FileSearch className="w-4 h-4" />, checks: idx });
+
+  // 2. Content & Metadata
+  const metaGroup: CheckItem[] = [];
+  if (meta) {
+    metaGroup.push(ck('title', 'Meta title', meta.titleLenOk ? 'pass' : 'warn',
+      meta.title ? `"${String(meta.title).substring(0, 60)}" (${(meta.titleLen as number) ?? 0} chars)` : 'Missing <title>', meta.title ? 'warning' : 'critical'));
+    metaGroup.push(ck('description', 'Meta description', meta.descLenOk ? 'pass' : 'warn',
+      meta.description ? `${(meta.descLen as number) ?? 0} chars` : 'Missing meta description', 'warning'));
+    metaGroup.push(ck('h1', 'H1 heading', meta.h1Ok ? 'pass' : 'warn',
+      meta.h1 ? `"${String(meta.h1).substring(0, 60)}"` : 'No H1 found', 'warning'));
+  }
+  if (metaGroup.length > 0) groups.push({ id: 'metadata', title: 'Content & Metadata', icon: <FileText className="w-4 h-4" />, checks: metaGroup });
+
+  // 3. Structured Data (VideoObject)
+  const sd: CheckItem[] = [];
+  if (schema) {
+    const types = (schema.typesFound as string[]) ?? [];
+    const present = (schema.presentFields as string[]) ?? [];
+    const hasVideo = types.includes('VideoObject');
+    sd.push(ck('video_schema', 'VideoObject schema', hasVideo ? 'pass' : 'fail', hasVideo ? 'VideoObject found' : 'No VideoObject schema', 'critical'));
+
+    if (hasVideo) {
+      for (const field of ['name', 'description', 'thumbnailUrl', 'uploadDate'] as const) {
+        const has = present.includes(field);
+        sd.push(ck(`video_${field}`, `VideoObject: ${field}`, has ? 'pass' : 'warn',
+          has ? `${field} present` : `Missing ${field}`,
+          (field === 'name' || field === 'thumbnailUrl') ? 'critical' : 'warning'));
+      }
+      for (const field of ['duration', 'contentUrl', 'embedUrl'] as const) {
+        const has = present.includes(field);
+        sd.push(ck(`video_${field}`, `VideoObject: ${field}`, has ? 'pass' : 'info',
+          has ? `${field} present` : `Missing ${field}`, 'info'));
+      }
+    }
+
+    // Check companion article schema
+    const hasCompanion = present.includes('NewsArticle (companion)');
+    sd.push(ck('companion_article', 'NewsArticle companion', hasCompanion ? 'pass' : 'info', hasCompanion ? 'NewsArticle schema present alongside VideoObject' : 'No NewsArticle alongside video', 'info'));
+
+    const hasBreadcrumb = types.includes('BreadcrumbList') || present.includes('BreadcrumbList');
+    sd.push(ck('breadcrumb', 'BreadcrumbList schema', hasBreadcrumb ? 'pass' : 'info', hasBreadcrumb ? 'BreadcrumbList found' : 'No BreadcrumbList', 'info'));
+  }
+  if (sd.length > 0) groups.push({ id: 'structured_data', title: 'Structured Data', icon: <Code2 className="w-4 h-4" />, checks: sd });
+
+  // 4. Open Graph (important for video sharing)
+  const social: CheckItem[] = [];
+  if (meta) {
+    const og = meta.ogTags as Record<string, unknown> | null;
+    if (og) {
+      social.push(ck('og_title', 'og:title', og.title ? 'pass' : 'warn', og.title ? String(og.title).substring(0, 60) : 'Missing og:title', 'warning'));
+      social.push(ck('og_image', 'og:image', og.image ? 'pass' : 'warn', og.image ? 'Image set' : 'Missing og:image', 'warning'));
+      social.push(ck('og_type', 'og:type', og.type === 'video.other' || og.type === 'video' ? 'pass' : og.type ? 'info' : 'warn',
+        og.type ? `og:type = ${String(og.type)}` : 'Missing og:type (should be video.other)', og.type ? 'info' : 'warning'));
+    }
+  }
+  if (social.length > 0) groups.push({ id: 'social', title: 'Open Graph & Social', icon: <Link className="w-4 h-4" />, checks: social });
+
+  // 5. Performance
+  const perfGroup: CheckItem[] = [];
+  if (perf) {
+    const loadMs = perf.loadMs as number | null;
+    if (loadMs != null) perfGroup.push(ck('load_time', 'Page load time', loadMs < 3000 ? 'pass' : loadMs < 5000 ? 'warn' : 'fail', `${loadMs}ms`, loadMs >= 5000 ? 'critical' : 'warning'));
+  }
+  if (meta) perfGroup.push(ck('viewport', 'Mobile viewport', meta.hasViewport ? 'pass' : 'warn', meta.hasViewport ? 'Viewport present' : 'Missing viewport', 'warning'));
+  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
+
+  return groups;
+}
+
+function buildSectionChecklist(row: AuditResultRow, siteChecks: Record<string, unknown> | null, pageLabel: string): CheckGroup[] {
+  const data = row.data;
+  if (!data) return [];
+  const canonical = data.canonical as Record<string, unknown> | null;
+  const schema = data.structuredData as Record<string, unknown> | null;
+  const meta = data.contentMeta as Record<string, unknown> | null;
+  const perf = data.performance as Record<string, unknown> | null;
+  const pagination = data.pagination as Record<string, unknown> | null;
+
+  const groups: CheckGroup[] = [];
+
+  // 1. Indexability
+  const idx: CheckItem[] = [];
+  if (meta) {
+    const rm = meta.robotsMeta as Record<string, unknown> | null;
+    idx.push(ck('indexable', 'Page is indexable', rm?.noindex ? 'fail' : 'pass', rm?.noindex ? 'noindex directive found' : 'No noindex directive', 'critical'));
+  }
+  if (canonical) {
+    idx.push(ck('canonical_exists', 'Canonical tag exists', canonical.exists ? 'pass' : 'fail', canonical.exists ? `${String(canonical.canonicalUrl || '')}` : 'No canonical tag found', 'critical'));
+    if (canonical.exists) {
+      idx.push(ck('canonical_match', `Canonical matches ${pageLabel} URL`, canonical.match ? 'pass' : 'warn', canonical.match ? 'Self-referencing canonical' : 'Canonical differs from page URL', 'critical'));
+      const canonUrl = String(canonical.canonicalUrl || '');
+      const hasQuery = (() => { try { return new URL(canonUrl).search.length > 0; } catch { return false; } })();
+      idx.push(ck('canonical_clean', 'Canonical ignores query strings', !hasQuery ? 'pass' : 'warn', hasQuery ? 'Canonical contains query parameters' : 'Clean canonical URL', 'warning'));
+    }
+  }
+  if (idx.length > 0) groups.push({ id: 'indexability', title: 'Indexability', icon: <FileSearch className="w-4 h-4" />, checks: idx });
+
+  // 2. Content & Metadata
+  const metaGroup: CheckItem[] = [];
+  if (meta) {
+    metaGroup.push(ck('title', 'Meta title', meta.titleLenOk ? 'pass' : 'warn',
+      meta.title ? `"${String(meta.title).substring(0, 60)}" (${(meta.titleLen as number) ?? 0} chars)` : 'Missing <title>', meta.title ? 'warning' : 'critical'));
+    metaGroup.push(ck('description', 'Meta description', meta.descLenOk ? 'pass' : 'warn',
+      meta.description ? `${(meta.descLen as number) ?? 0} chars` : 'Missing meta description', 'warning'));
+    metaGroup.push(ck('h1', 'H1 heading', meta.h1Ok ? 'pass' : 'warn',
+      meta.h1 ? `"${String(meta.h1).substring(0, 60)}"` : 'No H1 found', 'warning'));
+  }
+  if (metaGroup.length > 0) groups.push({ id: 'metadata', title: 'Content & Metadata', icon: <FileText className="w-4 h-4" />, checks: metaGroup });
+
+  // 3. Structured Data (generic)
+  const sd: CheckItem[] = [];
+  if (schema) {
+    const types = (schema.typesFound as string[]) ?? [];
+    const present = (schema.presentFields as string[]) ?? [];
+    if (types.length > 0) {
+      sd.push(ck('schema_types', 'Structured data present', 'pass', `Found: ${types.join(', ')}`, 'info'));
+    } else {
+      sd.push(ck('schema_types', 'Structured data', 'info', 'No JSON-LD found', 'info'));
+    }
+    const hasBreadcrumb = types.includes('BreadcrumbList') || present.includes('BreadcrumbList');
+    sd.push(ck('breadcrumb', 'BreadcrumbList schema', hasBreadcrumb ? 'pass' : 'info', hasBreadcrumb ? 'BreadcrumbList found' : 'No BreadcrumbList', 'info'));
+  }
+  if (sd.length > 0) groups.push({ id: 'structured_data', title: 'Structured Data', icon: <Code2 className="w-4 h-4" />, checks: sd });
+
+  // 4. Pagination (sections/tags/search often paginated)
+  if (pagination && (pagination.detectedPagination as boolean)) {
+    const pagGroup: CheckItem[] = [];
+    pagGroup.push(ck('pagination', 'Pagination pattern', 'info', `Pattern: ${String(pagination.pattern)}`, 'info'));
+    pagGroup.push(ck('pagination_canonical', 'Pagination canonical policy', pagination.canonicalPolicyOk ? 'pass' : 'warn',
+      pagination.canonicalPolicyOk ? 'Canonical policy OK' : 'Canonical on paginated page points to itself', 'warning'));
+    groups.push({ id: 'pagination', title: 'Pagination', icon: <FileSearch className="w-4 h-4" />, checks: pagGroup });
+  }
+
+  // 5. Performance
+  const perfGroup: CheckItem[] = [];
+  if (perf) {
+    const loadMs = perf.loadMs as number | null;
+    if (loadMs != null) perfGroup.push(ck('load_time', 'Page load time', loadMs < 3000 ? 'pass' : loadMs < 5000 ? 'warn' : 'fail', `${loadMs}ms`, loadMs >= 5000 ? 'critical' : 'warning'));
+  }
+  if (meta) perfGroup.push(ck('viewport', 'Mobile viewport', meta.hasViewport ? 'pass' : 'warn', meta.hasViewport ? 'Viewport present' : 'Missing viewport', 'warning'));
+  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
+
+  return groups;
+}
+
 /* ── UI Components ─────────────────────────────────────────────── */
 
 function CheckStatusIcon({ status }: { status: 'pass' | 'warn' | 'fail' | 'info' }) {
@@ -390,8 +630,25 @@ function SiteChecksSummary({ siteChecks, siteRecs }: { siteChecks: Record<string
           )}
         </div>
       </button>
-      {open && siteRecs.length > 0 && (
+      {open && (
         <div className="border-t border-slate-100 px-6 py-4 space-y-2">
+          {/* Sitemap details */}
+          {sitemap && String(sitemap.status) === 'VALID' && (
+            <div className="text-xs space-y-1 mb-3">
+              <p className="text-slate-600"><span className="font-medium">Sitemap type:</span> {String(sitemap.type)}</p>
+              {sitemap.url && <p className="text-slate-600 truncate"><span className="font-medium">URL:</span> <span className="font-mono">{String(sitemap.url)}</span></p>}
+              {(sitemap.urlCount as number) != null && <p className="text-slate-600"><span className="font-medium">URLs:</span> {String(sitemap.urlCount)}</p>}
+              {(sitemap.lastmodPct as number) != null && <p className="text-slate-600"><span className="font-medium">lastmod coverage:</span> {String(sitemap.lastmodPct)}%</p>}
+              {(sitemap as Record<string, unknown>).standards && (() => {
+                const s = (sitemap as Record<string, unknown>).standards as Record<string, unknown>;
+                return (
+                  <p className={`${s.hasNamespace ? 'text-green-600' : 'text-amber-600'}`}>
+                    <span className="font-medium">XML namespace:</span> {s.hasNamespace ? 'Valid' : 'Missing'}
+                  </p>
+                );
+              })()}
+            </div>
+          )}
           {siteRecs.map((r, i) => (
             <div key={i} className="flex items-start gap-2 text-xs bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg">
               <span className="font-semibold text-amber-700 shrink-0">{r.priority}</span>
@@ -399,6 +656,9 @@ function SiteChecksSummary({ siteChecks, siteRecs }: { siteChecks: Record<string
               <div><span className="text-slate-700">{r.message}</span> <span className="text-blue-600">{r.fixHint}</span></div>
             </div>
           ))}
+          {siteRecs.length === 0 && (
+            <p className="text-xs text-green-600">All site-level checks passed.</p>
+          )}
         </div>
       )}
     </div>
@@ -672,7 +932,20 @@ export default function SEOAgent() {
   const homeGroups = homeResult ? buildHomepageChecklist(homeResult, runData?.siteChecks ?? null) : [];
   const articleGroups = articleResult ? buildArticleChecklist(articleResult) : [];
 
-  const allChecks = [...homeGroups, ...articleGroups].flatMap(g => g.checks);
+  // Build checklist groups for other page types
+  const otherGroupsList = otherResults.map(row => {
+    const pt = (row.data?.pageType as string) ?? 'unknown';
+    if (pt === 'author') return { row, groups: buildAuthorChecklist(row) };
+    if (pt === 'video_article') return { row, groups: buildVideoChecklist(row) };
+    if (pt === 'section' || pt === 'tag' || pt === 'search') {
+      const label = pt === 'section' ? 'section' : pt === 'tag' ? 'tag' : 'search';
+      return { row, groups: buildSectionChecklist(row, runData?.siteChecks ?? null, label) };
+    }
+    return { row, groups: buildArticleChecklist(row) };
+  });
+
+  const allGroupsList = [homeGroups, articleGroups, ...otherGroupsList.map(o => o.groups)];
+  const allChecks = allGroupsList.flatMap(groups => groups.flatMap(g => g.checks));
   const passCount = allChecks.filter(c => c.status === 'pass').length;
   const warnCount = allChecks.filter(c => c.status === 'warn').length;
   const failCount = allChecks.filter(c => c.status === 'fail').length;
@@ -757,7 +1030,7 @@ export default function SEOAgent() {
                 <ScoreCircle pass={passCount} warn={warnCount} fail={failCount} />
                 <div className="flex-1 text-center sm:text-left">
                   <h2 className="text-xl font-bold text-slate-900">Audit Results</h2>
-                  <p className="text-sm text-slate-500 mt-1">{allChecks.length} checks across {homeGroups.length + articleGroups.length} categories</p>
+                  <p className="text-sm text-slate-500 mt-1">{allChecks.length} checks across {allGroupsList.reduce((s, g) => s + g.length, 0)} categories</p>
                 </div>
                 <div className="flex gap-6 text-center">
                   <div><p className="text-2xl font-bold text-green-600">{passCount}</p><p className="text-xs text-slate-500">Pass</p></div>
@@ -777,11 +1050,12 @@ export default function SEOAgent() {
               <PageAuditSection title="Article Page Audit" url={articleResult.url} groups={articleGroups} status={articleResult.status} />
             )}
 
-            {otherResults.length > 0 && otherResults.map(row => {
-              const pageType = (row.data?.pageType as string) ?? 'unknown';
-              const groups = pageType === 'home' ? buildHomepageChecklist(row, runData.siteChecks) : buildArticleChecklist(row);
+            {otherGroupsList.length > 0 && otherGroupsList.map(({ row, groups }) => {
+              const pt = (row.data?.pageType as string) ?? 'unknown';
+              const labels: Record<string, string> = { section: 'Section', tag: 'Tag / Topic', search: 'Search', author: 'Author', video_article: 'Video Article' };
+              const title = `${labels[pt] ?? pt.charAt(0).toUpperCase() + pt.slice(1)} Page Audit`;
               return groups.length > 0 ? (
-                <PageAuditSection key={row.id} title={`${pageType.charAt(0).toUpperCase() + pageType.slice(1)} Page Audit`} url={row.url} groups={groups} status={row.status} />
+                <PageAuditSection key={row.id} title={title} url={row.url} groups={groups} status={row.status} />
               ) : null;
             })}
 

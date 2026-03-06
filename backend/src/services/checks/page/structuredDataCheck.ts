@@ -172,6 +172,70 @@ export function runStructuredDataCheck(html: string, pageType: PageType): Struct
     }
   }
 
+  // ── Author page checks ───────────────────────────────────────
+  if (pageType === 'author') {
+    const hasPerson = allTypes.has('Person');
+    const hasProfilePage = allTypes.has('ProfilePage');
+
+    if (!hasPerson && !hasProfilePage) {
+      result.status = 'WARN';
+      result.missingFields.push('Person or ProfilePage schema');
+    }
+
+    if (hasPerson) {
+      result.presentFields.push('Person');
+      const personEntity = entities.find(e => getTypes(e).includes('Person'));
+      if (personEntity) {
+        for (const field of ['name', 'url', 'image', 'jobTitle', 'sameAs'] as const) {
+          if (personEntity[field]) {
+            result.presentFields.push(`Person.${field}`);
+          } else {
+            result.missingFields.push(`Person.${field}`);
+          }
+        }
+      }
+    }
+    if (hasProfilePage) result.presentFields.push('ProfilePage');
+  }
+
+  // ── Video article checks ────────────────────────────────────
+  if (pageType === 'video_article') {
+    const hasVideo = allTypes.has('VideoObject');
+    if (!hasVideo) {
+      result.status = 'FAIL';
+      result.missingFields.push('VideoObject schema');
+    } else {
+      const videoEntity = entities.find(e => getTypes(e).includes('VideoObject'));
+      if (videoEntity) {
+        // Required fields per Google specs
+        for (const field of ['name', 'description', 'thumbnailUrl', 'uploadDate'] as const) {
+          if (videoEntity[field]) {
+            result.presentFields.push(field);
+          } else {
+            result.missingFields.push(field);
+            if (field === 'name' || field === 'thumbnailUrl') {
+              result.status = result.status === 'FAIL' ? 'FAIL' : 'WARN';
+            }
+          }
+        }
+        // Recommended fields
+        for (const field of ['duration', 'contentUrl', 'embedUrl', 'publisher'] as const) {
+          if (videoEntity[field]) {
+            result.presentFields.push(field);
+          } else {
+            result.missingFields.push(field);
+          }
+        }
+      }
+    }
+
+    // Also check for NewsArticle alongside VideoObject
+    const hasArticle = allTypes.has('NewsArticle') || allTypes.has('Article');
+    if (hasArticle) {
+      result.presentFields.push('NewsArticle (companion)');
+    }
+  }
+
   // Check for BreadcrumbList
   if (allTypes.has('BreadcrumbList')) {
     result.presentFields.push('BreadcrumbList');

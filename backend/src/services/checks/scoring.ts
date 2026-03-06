@@ -192,6 +192,68 @@ export function scoreResult(data: CheckData): ScoringResult {
         });
       }
     }
+    if (pageType === 'author') {
+      const types = data.structuredData.typesFound;
+      if (!types.includes('Person') && !types.includes('ProfilePage')) {
+        escalate('WARN');
+        recs.push({
+          priority: 'P1', area: 'schema',
+          message: 'Author page missing Person or ProfilePage schema',
+          fixHint: 'Add a JSON-LD block with @type "Person" including name, url, and image.',
+        });
+      } else {
+        for (const field of data.structuredData.missingFields) {
+          if (field === 'Person.name') {
+            escalate('WARN');
+            recs.push({
+              priority: 'P1', area: 'schema',
+              message: 'Person schema missing name field',
+              fixHint: 'Add "name" to your Person JSON-LD.',
+            });
+          } else if (field.startsWith('Person.')) {
+            recs.push({
+              priority: 'P2', area: 'schema',
+              message: `Person schema missing: ${field.replace('Person.', '')}`,
+              fixHint: `Add "${field.replace('Person.', '')}" to your Person JSON-LD for richer author profiles.`,
+            });
+          }
+        }
+      }
+    }
+    if (pageType === 'video_article') {
+      const types = data.structuredData.typesFound;
+      if (!types.includes('VideoObject')) {
+        escalate('FAIL');
+        recs.push({
+          priority: 'P0', area: 'schema',
+          message: 'Video page missing VideoObject schema',
+          fixHint: 'Add a JSON-LD block with @type "VideoObject" including name, description, thumbnailUrl, and uploadDate.',
+        });
+      } else {
+        for (const field of data.structuredData.missingFields) {
+          if (field === 'name' || field === 'thumbnailUrl') {
+            escalate('WARN');
+            recs.push({
+              priority: 'P1', area: 'schema',
+              message: `VideoObject missing required field: ${field}`,
+              fixHint: `Add "${field}" to your VideoObject JSON-LD.`,
+            });
+          } else if (field === 'description' || field === 'uploadDate') {
+            recs.push({
+              priority: 'P1', area: 'schema',
+              message: `VideoObject missing: ${field}`,
+              fixHint: `Add "${field}" to your VideoObject JSON-LD.`,
+            });
+          } else if (field === 'duration' || field === 'contentUrl' || field === 'embedUrl') {
+            recs.push({
+              priority: 'P2', area: 'schema',
+              message: `VideoObject missing recommended field: ${field}`,
+              fixHint: `Add "${field}" for better video indexing.`,
+            });
+          }
+        }
+      }
+    }
     if (data.structuredData.missingFields.includes('Person with name (author)')) {
       escalate('WARN');
       recs.push({
@@ -349,7 +411,17 @@ export function scoreResult(data: CheckData): ScoringResult {
 
 interface SiteChecksData {
   robots?: { status: string; notes?: string[] };
-  sitemap?: { status: string; errors?: string[]; warnings?: string[] };
+  sitemap?: {
+    status: string;
+    errors?: string[];
+    warnings?: string[];
+    standards?: {
+      hasNamespace: boolean;
+      invalidLocs: string[];
+      invalidLastmods: string[];
+      emptyLocs: number;
+    };
+  };
 }
 
 export function scoreSiteChecks(data: SiteChecksData | null): Recommendation[] {
@@ -397,6 +469,52 @@ export function scoreSiteChecks(data: SiteChecksData | null): Recommendation[] {
         message: 'Sitemap could not be validated',
         fixHint: 'Verify the sitemap URL is reachable and returns valid XML.',
       });
+    }
+
+    // Standards compliance warnings
+    if (data.sitemap.standards) {
+      const s = data.sitemap.standards;
+      if (!s.hasNamespace) {
+        recs.push({
+          priority: 'P2', area: 'sitemap',
+          message: 'Sitemap missing standard XML namespace',
+          fixHint: 'Add xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" to the root element.',
+        });
+      }
+      if (s.invalidLocs.length > 0) {
+        recs.push({
+          priority: 'P1', area: 'sitemap',
+          message: `${s.invalidLocs.length} sitemap <loc> entries have invalid URLs`,
+          fixHint: 'All <loc> values must be valid absolute HTTP/HTTPS URLs.',
+        });
+      }
+      if (s.emptyLocs > 0) {
+        recs.push({
+          priority: 'P1', area: 'sitemap',
+          message: `${s.emptyLocs} sitemap <loc> entries are empty`,
+          fixHint: 'Every <url> element must contain a non-empty <loc>.',
+        });
+      }
+      if (s.invalidLastmods.length > 0) {
+        recs.push({
+          priority: 'P2', area: 'sitemap',
+          message: `${s.invalidLastmods.length} <lastmod> entries not in ISO 8601 format`,
+          fixHint: 'Use ISO 8601 format for <lastmod> (e.g. 2024-01-15T10:30:00+00:00).',
+        });
+      }
+    }
+
+    // Sitemap warnings from validation
+    if (data.sitemap.warnings) {
+      for (const w of data.sitemap.warnings) {
+        if (w.includes('0 URLs') || w.includes('stale')) {
+          recs.push({
+            priority: 'P1', area: 'sitemap',
+            message: w,
+            fixHint: 'Ensure sitemap child files contain valid <url> entries.',
+          });
+        }
+      }
     }
   }
 

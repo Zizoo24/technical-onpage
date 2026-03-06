@@ -8,6 +8,7 @@ export interface StructuredDataResult {
   status: 'PASS' | 'WARN' | 'FAIL';
   typesFound: string[];
   missingFields: string[];
+  presentFields: string[];
   notes: string[];
 }
 
@@ -59,6 +60,7 @@ export function runStructuredDataCheck(html: string, pageType: PageType): Struct
     status: 'PASS',
     typesFound: [],
     missingFields: [],
+    presentFields: [],
     notes: [],
   };
 
@@ -76,72 +78,104 @@ export function runStructuredDataCheck(html: string, pageType: PageType): Struct
   }
   result.typesFound = [...allTypes];
 
-  // ── Validate per page type ────────────────────────────────────
-
+  // ── Homepage checks ────────────────────────────────────────────
   if (pageType === 'home') {
-    if (!allTypes.has('WebSite') && !allTypes.has('Organization')) {
+    const hasWebSite = allTypes.has('WebSite');
+    const hasOrg = allTypes.has('Organization');
+
+    if (!hasWebSite && !hasOrg) {
       result.status = 'WARN';
       result.missingFields.push('WebSite or Organization schema');
     }
+    if (hasWebSite) result.presentFields.push('WebSite');
+    if (hasOrg) result.presentFields.push('Organization');
+
+    // Check WebSite for SearchAction (sitelinks searchbox)
+    const websiteEntity = entities.find(e => getTypes(e).includes('WebSite'));
+    if (websiteEntity?.['potentialAction']) {
+      result.presentFields.push('SearchAction (sitelinks)');
+    }
+
+    // Check Organization for logo, name
+    const orgEntity = entities.find(e => getTypes(e).includes('Organization'));
+    if (orgEntity) {
+      if (orgEntity['name']) result.presentFields.push('Organization name');
+      if (orgEntity['logo']) result.presentFields.push('Organization logo');
+    }
   }
 
+  // ── Article checks ─────────────────────────────────────────────
   if (pageType === 'article') {
     const hasArticleType = allTypes.has('NewsArticle') || allTypes.has('Article');
     if (!hasArticleType) {
       result.status = 'FAIL';
       result.missingFields.push('NewsArticle or Article schema');
     } else {
-      // Check required fields on the article entity
       const articleEntity = entities.find((e) => {
         const types = getTypes(e);
         return types.includes('NewsArticle') || types.includes('Article');
       });
+
       if (articleEntity) {
-        if (!articleEntity['headline']) {
-          result.status = result.status === 'FAIL' ? 'FAIL' : 'WARN';
-          result.missingFields.push('headline');
+        // Required fields
+        for (const field of ['headline', 'datePublished', 'author', 'image'] as const) {
+          if (articleEntity[field]) {
+            result.presentFields.push(field);
+          } else {
+            result.missingFields.push(field);
+            if (field === 'headline' || field === 'datePublished') {
+              result.status = result.status === 'FAIL' ? 'FAIL' : 'WARN';
+            }
+          }
         }
-        if (!articleEntity['datePublished']) {
-          result.status = result.status === 'FAIL' ? 'FAIL' : 'WARN';
-          result.missingFields.push('datePublished');
+
+        // Recommended fields
+        for (const field of ['dateModified', 'publisher', 'mainEntityOfPage', 'description'] as const) {
+          if (articleEntity[field]) {
+            result.presentFields.push(field);
+          } else {
+            result.missingFields.push(field);
+          }
+        }
+
+        // Publisher check (name + logo)
+        const pub = articleEntity['publisher'] as JsonLdObject | undefined;
+        if (pub && typeof pub === 'object') {
+          if (pub['name']) result.presentFields.push('publisher.name');
+          if (pub['logo']) result.presentFields.push('publisher.logo');
+        }
+
+        // Author check
+        const authorField = articleEntity['author'];
+        const hasValidAuthor = (() => {
+          if (!authorField) return false;
+          if (Array.isArray(authorField)) {
+            return authorField.some(
+              (a) => a && typeof a === 'object' && 'name' in (a as Record<string, unknown>),
+            );
+          }
+          return typeof authorField === 'object' && 'name' in (authorField as Record<string, unknown>);
+        })();
+
+        const hasPerson = entities.some((e) => {
+          const types = getTypes(e);
+          return types.includes('Person') && e['name'];
+        });
+
+        if (!hasValidAuthor && !hasPerson) {
+          if (!result.missingFields.includes('author')) {
+            result.missingFields.push('Person with name (author)');
+          }
+          if (result.status === 'PASS') result.status = 'WARN';
         }
       }
     }
-
-    // Author check
-    const hasPerson = entities.some((e) => {
-      const types = getTypes(e);
-      return types.includes('Person') && e['name'];
-    });
-    // Also check nested author in article entity
-    const articleEntity = entities.find((e) => {
-      const types = getTypes(e);
-      return types.includes('NewsArticle') || types.includes('Article');
-    });
-    const authorField = articleEntity?.['author'];
-    const hasInlineAuthor = (() => {
-      if (!authorField) return false;
-      if (Array.isArray(authorField)) {
-        return authorField.some(
-          (a) => a && typeof a === 'object' && 'name' in (a as Record<string, unknown>),
-        );
-      }
-      return typeof authorField === 'object' && 'name' in (authorField as Record<string, unknown>);
-    })();
-
-    if (!hasPerson && !hasInlineAuthor) {
-      if (result.status === 'PASS') result.status = 'WARN';
-      result.missingFields.push('Person with name (author)');
-    }
   }
 
-  // video_article — look for VideoObject
-  if (pageType === 'article') {
-    // Only note if page hints at video (don't fail)
-    // We check for VideoObject presence if the type list includes it
-    // This is informational — no downgrade
+  // Check for BreadcrumbList
+  if (allTypes.has('BreadcrumbList')) {
+    result.presentFields.push('BreadcrumbList');
   }
 
-  // If types found but nothing specific matched, it's still PASS (informational)
   return result;
 }

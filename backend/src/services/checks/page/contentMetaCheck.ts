@@ -4,12 +4,39 @@
 
 import type { PageType } from './canonicalCheck.js';
 
+export interface OgTags {
+  title: string | null;
+  description: string | null;
+  image: string | null;
+  type: string | null;
+  url: string | null;
+}
+
+export interface TwitterTags {
+  card: string | null;
+  title: string | null;
+  image: string | null;
+}
+
 export interface ContentMetaResult {
+  title: string | null;
+  titleLen: number;
   titleLenOk: boolean;
+  description: string | null;
+  descLen: number;
   descLenOk: boolean;
+  h1: string | null;
+  h1Count: number;
   h1Ok: boolean;
   robotsMeta: { noindex: boolean; nofollow: boolean };
   duplicateTitle: boolean;
+  wordCount: number;
+  hasAuthorByline: boolean;
+  hasPublishDate: boolean;
+  hasMainImage: boolean;
+  ogTags: OgTags;
+  twitterTags: TwitterTags;
+  hasViewport: boolean;
   warnings: string[];
 }
 
@@ -46,6 +73,63 @@ function extractRobotsMeta(html: string): { noindex: boolean; nofollow: boolean 
   };
 }
 
+function extractOgTags(html: string): OgTags {
+  const get = (prop: string): string | null => {
+    const m =
+      html.match(new RegExp(`<meta[^>]*property=["']og:${prop}["'][^>]*content=["']([^"']*)["']`, 'i')) ??
+      html.match(new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:${prop}["']`, 'i'));
+    return m ? m[1] : null;
+  };
+  return { title: get('title'), description: get('description'), image: get('image'), type: get('type'), url: get('url') };
+}
+
+function extractTwitterTags(html: string): TwitterTags {
+  const get = (prop: string): string | null => {
+    const m =
+      html.match(new RegExp(`<meta[^>]*name=["']twitter:${prop}["'][^>]*content=["']([^"']*)["']`, 'i')) ??
+      html.match(new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*name=["']twitter:${prop}["']`, 'i'));
+    return m ? m[1] : null;
+  };
+  return { card: get('card'), title: get('title'), image: get('image') };
+}
+
+function countWords(html: string): number {
+  const text = html
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.split(/\s+/).filter(w => w.length > 0).length;
+}
+
+function hasAuthorByline(html: string): boolean {
+  // Check for common author patterns in HTML
+  if (/<[^>]*class=["'][^"']*(?:author|byline|writer)[^"']*["'][^>]*>/i.test(html)) return true;
+  if (/<[^>]*rel=["']author["'][^>]*>/i.test(html)) return true;
+  if (/<[^>]*itemprop=["']author["'][^>]*>/i.test(html)) return true;
+  return false;
+}
+
+function hasPublishDate(html: string): boolean {
+  if (/<time[^>]*datetime=["'][^"']+["'][^>]*>/i.test(html)) return true;
+  if (/<[^>]*itemprop=["']datePublished["'][^>]*>/i.test(html)) return true;
+  if (/<[^>]*class=["'][^"']*(?:publish|date|posted)[^"']*["'][^>]*>/i.test(html)) return true;
+  return false;
+}
+
+function hasMainImage(html: string): boolean {
+  // Check for a prominent image (above fold / main article image)
+  if (/<img[^>]*class=["'][^"']*(?:hero|featured|main|article|thumbnail|cover)[^"']*["'][^>]*>/i.test(html)) return true;
+  // Check for og:image as fallback
+  if (/<meta[^>]*property=["']og:image["'][^>]*/i.test(html)) return true;
+  return false;
+}
+
+function hasViewport(html: string): boolean {
+  return /<meta[^>]*name=["']viewport["']/i.test(html);
+}
+
 export function runContentMetaCheck(
   html: string,
   pageType: PageType,
@@ -55,6 +139,7 @@ export function runContentMetaCheck(
 
   // Title
   const title = extractTitle(html);
+  const titleLen = title?.length ?? 0;
   let titleLenOk = false;
   if (title === null) {
     warnings.push('Missing <title> tag');
@@ -79,6 +164,7 @@ export function runContentMetaCheck(
 
   // Description
   const desc = extractDescription(html);
+  const descLen = desc?.length ?? 0;
   let descLenOk = false;
   if (desc === null) {
     warnings.push('Missing meta description');
@@ -120,5 +206,30 @@ export function runContentMetaCheck(
   if (robotsMeta.noindex) warnings.push('Page has noindex directive');
   if (robotsMeta.nofollow) warnings.push('Page has nofollow directive');
 
-  return { titleLenOk, descLenOk, h1Ok, robotsMeta, duplicateTitle, warnings };
+  // New fields
+  const wordCount = countWords(html);
+  const ogTags = extractOgTags(html);
+  const twitterTags = extractTwitterTags(html);
+
+  return {
+    title,
+    titleLen,
+    titleLenOk,
+    description: desc,
+    descLen,
+    descLenOk,
+    h1: h1s[0] ?? null,
+    h1Count: h1s.length,
+    h1Ok,
+    robotsMeta,
+    duplicateTitle,
+    wordCount,
+    hasAuthorByline: hasAuthorByline(html),
+    hasPublishDate: hasPublishDate(html),
+    hasMainImage: hasMainImage(html),
+    ogTags,
+    twitterTags,
+    hasViewport: hasViewport(html),
+    warnings,
+  };
 }

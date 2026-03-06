@@ -12,6 +12,18 @@ const __dirname = dirname(__filename);
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
+// --------------- Database config validation ---------------
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.warn('⚠  DATABASE WARNING: SUPABASE_URL and SUPABASE_ANON_KEY are not set.');
+  console.warn('   The server will run in IN-MEMORY mode — audit results will not be persisted.');
+  console.warn('   Set SUPABASE_URL + SUPABASE_ANON_KEY (or VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY) to enable persistence.');
+} else {
+  console.log('✓  Supabase configured:', SUPABASE_URL);
+}
+
 // --------------- Middleware ---------------
 app.use((req, _res, next) => {
   if (req.url.startsWith('/api')) {
@@ -97,6 +109,5 @@ if (isProduction && existsSync(distPath)) {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on http://0.0.0.0:${PORT}`);
   console.log(`Health check: http://0.0.0.0:${PORT}/health`);
-  console.log(`SUPABASE configured: ${!!(process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL)}`);
   console.log(`NODE_ENV: ${process.env.NODE_ENV}`);
 });

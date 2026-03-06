@@ -4,12 +4,11 @@ services:
   app:
     build:
       context: .
-      dockerfile: Dockerfile
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     environment:
       - PORT=${PORT:-3000}
       - NODE_ENV=production
-      - DATABASE_URL=${DATABASE_URL}
+      - VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+      - VITE_SUPABASE_ANON_KEY=${VITE_SUPABASE_ANON_KEY}
     restart: unless-stopped
-    # No volumes required – the app is fully stateless

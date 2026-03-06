@@ -129,6 +129,54 @@ export function runStructuredDataCheck(html: string, pageType: PageType): Struct
           }
         }
 
+        // Validate date formats (ISO 8601)
+        const iso8601Re = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?([+-]\d{2}:\d{2}|Z)?)?$/;
+        for (const dateField of ['datePublished', 'dateModified'] as const) {
+          const val = articleEntity[dateField];
+          if (typeof val === 'string') {
+            if (iso8601Re.test(val)) {
+              result.presentFields.push(`${dateField}:valid_format`);
+            } else {
+              result.notes.push(`${dateField} format "${val}" is not valid ISO 8601`);
+              result.missingFields.push(`${dateField}:valid_format`);
+              if (result.status === 'PASS') result.status = 'WARN';
+            }
+          }
+        }
+
+        // isAccessibleForFree (paywall detection)
+        if ('isAccessibleForFree' in articleEntity) {
+          result.presentFields.push('isAccessibleForFree');
+          if (articleEntity['isAccessibleForFree'] === false) {
+            // Check for hasPart with cssSelector (proper paywall markup)
+            const hasPart = articleEntity['hasPart'];
+            if (hasPart && typeof hasPart === 'object') {
+              result.presentFields.push('hasPart (paywall sections)');
+            } else {
+              result.notes.push('isAccessibleForFree is false but no hasPart with cssSelector found');
+            }
+          }
+        }
+
+        // Author @type validation
+        const authorField = articleEntity['author'];
+        if (authorField) {
+          const checkAuthorType = (a: unknown): boolean => {
+            if (!a || typeof a !== 'object') return false;
+            const aObj = a as Record<string, unknown>;
+            return aObj['@type'] === 'Person' || aObj['@type'] === 'Organization';
+          };
+          if (Array.isArray(authorField)) {
+            const allTyped = authorField.every(checkAuthorType);
+            if (!allTyped) result.notes.push('Author should use @type Person or Organization, not a plain string');
+          } else if (typeof authorField === 'string') {
+            result.notes.push('Author is a plain string — should be @type Person with name');
+            result.missingFields.push('author:typed_object');
+          } else if (!checkAuthorType(authorField)) {
+            result.notes.push('Author object missing @type Person');
+          }
+        }
+
         // Recommended fields
         for (const field of ['dateModified', 'publisher', 'mainEntityOfPage', 'description'] as const) {
           if (articleEntity[field]) {
@@ -145,16 +193,16 @@ export function runStructuredDataCheck(html: string, pageType: PageType): Struct
           if (pub['logo']) result.presentFields.push('publisher.logo');
         }
 
-        // Author check
-        const authorField = articleEntity['author'];
+        // Author check (separate from @type validation above)
+        const authorForNameCheck = articleEntity['author'];
         const hasValidAuthor = (() => {
-          if (!authorField) return false;
-          if (Array.isArray(authorField)) {
-            return authorField.some(
+          if (!authorForNameCheck) return false;
+          if (Array.isArray(authorForNameCheck)) {
+            return authorForNameCheck.some(
               (a) => a && typeof a === 'object' && 'name' in (a as Record<string, unknown>),
             );
           }
-          return typeof authorField === 'object' && 'name' in (authorField as Record<string, unknown>);
+          return typeof authorForNameCheck === 'object' && 'name' in (authorForNameCheck as Record<string, unknown>);
         })();
 
         const hasPerson = entities.some((e) => {

@@ -51,13 +51,34 @@ async function auditSingleUrl(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PAGE_TIMEOUT);
   let html = '', fetchOk = false, loadMs = 0;
+  let xRobotsTag = '';
+  let httpStatus = 0;
+  const redirectChain: string[] = [];
   const fetchStart = Date.now();
   try {
-    const pageRes = await fetch(url, {
-      redirect: 'follow', signal: controller.signal,
-      headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' },
-    });
-    if (pageRes.ok) { html = await pageRes.text(); fetchOk = true; }
+    // Follow redirects manually to detect chains
+    let currentUrl = url;
+    for (let hop = 0; hop < 6; hop++) {
+      const hopRes = await fetch(currentUrl, {
+        redirect: 'manual', signal: controller.signal,
+        headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' },
+      });
+      httpStatus = hopRes.status;
+      if (httpStatus >= 300 && httpStatus < 400) {
+        const location = hopRes.headers.get('location');
+        if (location) {
+          redirectChain.push(currentUrl);
+          currentUrl = new URL(location, currentUrl).href;
+          continue;
+        }
+      }
+      if (hopRes.ok) {
+        html = await hopRes.text();
+        fetchOk = true;
+        xRobotsTag = hopRes.headers.get('x-robots-tag') ?? '';
+      }
+      break;
+    }
   } finally { loadMs = Date.now() - fetchStart; clearTimeout(timer); }
 
   if (!fetchOk || !html) {
@@ -71,13 +92,16 @@ async function auditSingleUrl(
     : detectPageType(url);
   let canonical = null; try { canonical = runCanonicalCheck(html, url, pageType); } catch { /* */ }
   let structuredData = null; try { structuredData = runStructuredDataCheck(html, pageType); } catch { /* */ }
-  let contentMeta = null; try { contentMeta = runContentMetaCheck(html, pageType, seenTitles); } catch { /* */ }
+  let contentMeta = null; try { contentMeta = runContentMetaCheck(html, pageType, seenTitles, { pageUrl: url, xRobotsTag }); } catch { /* */ }
   let pagination = null; try { pagination = runPaginationCheck(html, url, pageType, canonical?.canonicalUrl ?? null); } catch { /* */ }
   let performance = null; try { performance = await runPerformanceCheck(url, html, loadMs); } catch { /* */ }
 
   const toJson = (v: unknown) => JSON.parse(JSON.stringify(v));
   const data: Record<string, unknown> = {
     pageType,
+    httpStatus,
+    redirectChain: redirectChain.length > 0 ? redirectChain : null,
+    redirectCount: redirectChain.length,
     canonical: canonical ? toJson(canonical) : null,
     structuredData: structuredData ? toJson(structuredData) : null,
     contentMeta: contentMeta ? toJson(contentMeta) : null,

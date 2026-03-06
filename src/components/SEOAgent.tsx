@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from 'react';
 import {
   Search, AlertCircle, CheckCircle, Loader2, ChevronDown, ChevronRight,
   AlertTriangle, XCircle, Shield, Map, Copy, Check, Plus,
-  Globe, FileSearch, Code2, FileText, Link, Zap, Newspaper,
+  Globe, FileSearch, Code2, FileText, Link, Zap, Newspaper, Download,
 } from 'lucide-react';
 
 /* ── Types ─────────────────────────────────────────────────────── */
@@ -52,6 +52,78 @@ function ck(id: string, label: string, status: 'pass' | 'warn' | 'fail' | 'info'
   return { id, label, status, detail, severity };
 }
 
+/** Shared: build performance check items including TTFB and PSI when available */
+function buildPerfChecks(perf: Record<string, unknown> | null, meta: Record<string, unknown> | null): CheckItem[] {
+  const items: CheckItem[] = [];
+  if (perf) {
+    const ttfbMs = perf.ttfbMs as number | null;
+    if (ttfbMs != null) items.push(ck('ttfb', 'Time to First Byte', ttfbMs < 800 ? 'pass' : ttfbMs < 1800 ? 'warn' : 'fail', `${ttfbMs}ms`, ttfbMs >= 1800 ? 'critical' : 'warning'));
+    const loadMs = perf.loadMs as number | null;
+    if (loadMs != null) items.push(ck('load_time', 'Page load time', loadMs < 3000 ? 'pass' : loadMs < 5000 ? 'warn' : 'fail', `${loadMs}ms`, loadMs >= 5000 ? 'critical' : 'warning'));
+    const htmlKb = perf.htmlKb as number | null;
+    if (htmlKb != null) items.push(ck('html_size', 'HTML size', htmlKb < 200 ? 'pass' : htmlKb < 500 ? 'warn' : 'fail', `${htmlKb} KB`, 'warning'));
+
+    // PSI metrics (when available)
+    const psi = perf.psi as Record<string, unknown> | null;
+    if (psi) {
+      const score = psi.performance as number | null;
+      if (score != null) items.push(ck('psi_score', 'PageSpeed score', score >= 90 ? 'pass' : score >= 50 ? 'warn' : 'fail', `${score}/100`, score < 50 ? 'critical' : 'warning'));
+      const lcp = psi.lcp as number | null;
+      if (lcp != null) items.push(ck('lcp', 'Largest Contentful Paint', lcp <= 2500 ? 'pass' : lcp <= 4000 ? 'warn' : 'fail', `${lcp}ms`, lcp > 4000 ? 'critical' : 'warning'));
+      const cls = psi.cls as number | null;
+      if (cls != null) items.push(ck('cls', 'Cumulative Layout Shift', cls <= 0.1 ? 'pass' : cls <= 0.25 ? 'warn' : 'fail', `${cls}`, 'warning'));
+      const inp = psi.inp as number | null;
+      if (inp != null) items.push(ck('inp', 'Interaction to Next Paint', inp <= 200 ? 'pass' : inp <= 500 ? 'warn' : 'fail', `${inp}ms`, 'warning'));
+    }
+  }
+  if (meta) items.push(ck('viewport', 'Mobile viewport', meta.hasViewport ? 'pass' : 'warn', meta.hasViewport ? 'Viewport present' : 'Missing viewport', 'warning'));
+  return items;
+}
+
+/** Shared: build crawlability checks from meta (X-Robots-Tag, charset, lang) */
+function buildTechMetaChecks(data: Record<string, unknown>): CheckItem[] {
+  const items: CheckItem[] = [];
+  const meta = data.contentMeta as Record<string, unknown> | null;
+  if (!meta) return items;
+
+  // X-Robots-Tag
+  const xrt = meta.xRobotsTag as Record<string, unknown> | null;
+  if (xrt) {
+    if (xrt.noindex) items.push(ck('x_robots_noindex', 'X-Robots-Tag', 'fail', 'HTTP header contains noindex', 'critical'));
+    else items.push(ck('x_robots_ok', 'X-Robots-Tag', 'pass', 'No blocking directives in HTTP header', 'info'));
+  }
+
+  // Redirect chain
+  const redirectCount = data.redirectCount as number | undefined;
+  if (redirectCount !== undefined) {
+    if (redirectCount === 0) items.push(ck('redirects', 'No redirect chain', 'pass', 'Direct response (no redirects)', 'info'));
+    else if (redirectCount <= 2) items.push(ck('redirects', 'Redirect chain', 'info', `${redirectCount} redirect(s)`, 'info'));
+    else items.push(ck('redirects', 'Redirect chain too long', 'warn', `${redirectCount} redirects — max 2 recommended`, 'warning'));
+  }
+
+  // Charset
+  items.push(ck('charset', 'Charset declared', meta.charset ? 'pass' : 'info', meta.charset ? `charset=${String(meta.charset)}` : 'No charset declaration', 'info'));
+
+  // Lang
+  items.push(ck('lang', 'Language attribute', meta.lang ? 'pass' : 'info', meta.lang ? `lang="${String(meta.lang)}"` : 'No lang attribute on <html>', 'info'));
+
+  return items;
+}
+
+/** Shared: build hreflang checks when tags are present */
+function buildHreflangChecks(meta: Record<string, unknown> | null): CheckItem[] {
+  if (!meta) return [];
+  const tags = meta.hreflangTags as { hreflang: string; href: string }[] | undefined;
+  if (!tags || tags.length === 0) return [];
+  const items: CheckItem[] = [];
+  items.push(ck('hreflang_count', 'Hreflang tags found', 'pass', `${tags.length} hreflang tag(s)`, 'info'));
+  const hasDefault = tags.some(t => t.hreflang === 'x-default');
+  items.push(ck('hreflang_default', 'x-default hreflang', hasDefault ? 'pass' : 'info', hasDefault ? 'x-default present' : 'No x-default — recommended for fallback', 'info'));
+  const langs = tags.map(t => t.hreflang).filter(h => h !== 'x-default');
+  if (langs.length > 0) items.push(ck('hreflang_langs', 'Language versions', 'info', langs.join(', '), 'info'));
+  return items;
+}
+
 function buildHomepageChecklist(row: AuditResultRow, siteChecks: Record<string, unknown> | null): CheckGroup[] {
   const data = row.data;
   if (!data) return [];
@@ -78,8 +150,8 @@ function buildHomepageChecklist(row: AuditResultRow, siteChecks: Record<string, 
     const rm = meta.robotsMeta as Record<string, unknown> | null;
     crawl.push(ck('indexable', 'Page is indexable', rm?.noindex ? 'fail' : 'pass', rm?.noindex ? 'noindex directive found' : 'No noindex directive', 'critical'));
     if (rm?.nofollow) crawl.push(ck('nofollow', 'Link following', 'warn', 'nofollow directive found', 'warning'));
-    crawl.push(ck('viewport', 'Mobile viewport', meta.hasViewport ? 'pass' : 'warn', meta.hasViewport ? 'Viewport meta tag present' : 'Missing viewport meta tag', 'warning'));
   }
+  crawl.push(...buildTechMetaChecks(data));
   if (crawl.length > 0) groups.push({ id: 'crawl', title: 'Crawlability & Access', icon: <Globe className="w-4 h-4" />, checks: crawl });
 
   // 2. Canonical & Indexability
@@ -128,15 +200,13 @@ function buildHomepageChecklist(row: AuditResultRow, siteChecks: Record<string, 
   }
   if (sd.length > 0) groups.push({ id: 'structured_data', title: 'Structured Data', icon: <Code2 className="w-4 h-4" />, checks: sd });
 
-  // 5. Performance
-  const perfGroup: CheckItem[] = [];
-  if (perf) {
-    const loadMs = perf.loadMs as number | null;
-    if (loadMs != null) perfGroup.push(ck('load_time', 'Page load time', loadMs < 3000 ? 'pass' : loadMs < 5000 ? 'warn' : 'fail', `${loadMs}ms`, loadMs >= 5000 ? 'critical' : 'warning'));
-    const htmlKb = perf.htmlKb as number | null;
-    if (htmlKb != null) perfGroup.push(ck('html_size', 'HTML size', htmlKb < 200 ? 'pass' : htmlKb < 500 ? 'warn' : 'fail', `${htmlKb} KB`, 'warning'));
-  }
-  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
+  // 5. International (hreflang — only if tags exist)
+  const hreflangHomeItems = buildHreflangChecks(meta);
+  if (hreflangHomeItems.length > 0) groups.push({ id: 'international', title: 'International (hreflang)', icon: <Globe className="w-4 h-4" />, checks: hreflangHomeItems });
+
+  // 6. Performance
+  const perfGroup = buildPerfChecks(perf, meta);
+  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance & CWV', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
 
   return groups;
 }
@@ -168,6 +238,7 @@ function buildArticleChecklist(row: AuditResultRow): CheckGroup[] {
       idx.push(ck('canonical_clean', 'Canonical ignores query strings', !hasQuery ? 'pass' : 'warn', hasQuery ? 'Canonical contains query parameters' : 'Clean canonical URL', 'warning'));
     }
   }
+  idx.push(...buildTechMetaChecks(data));
   if (idx.length > 0) groups.push({ id: 'indexability', title: 'Indexability', icon: <FileSearch className="w-4 h-4" />, checks: idx });
 
   // 2. Content & Metadata
@@ -186,6 +257,10 @@ function buildArticleChecklist(row: AuditResultRow): CheckGroup[] {
       metaGroup.push(ck('word_count', 'Word count (min 300)', wc >= 300 ? 'pass' : 'warn', `${wc} words`, wc < 300 ? 'warning' : 'info'));
     }
     if (meta.duplicateTitle) metaGroup.push(ck('dup_title', 'Unique title', 'warn', 'Duplicate title in this audit', 'warning'));
+    const intLinks = meta.internalLinkCount as number | undefined;
+    const extLinks = meta.externalLinkCount as number | undefined;
+    if (intLinks !== undefined) metaGroup.push(ck('internal_links', 'Internal links', intLinks >= 3 ? 'pass' : 'warn', `${intLinks} internal link(s)${intLinks < 3 ? ' — aim for at least 3' : ''}`, 'warning'));
+    if (extLinks !== undefined) metaGroup.push(ck('external_links', 'External links', 'info', `${extLinks} external link(s)`, 'info'));
   }
   if (metaGroup.length > 0) groups.push({ id: 'metadata', title: 'Content & Metadata', icon: <FileText className="w-4 h-4" />, checks: metaGroup });
 
@@ -213,6 +288,21 @@ function buildArticleChecklist(row: AuditResultRow): CheckGroup[] {
         sd.push(ck('publisher_logo', 'Publisher logo', present.includes('publisher.logo') ? 'pass' : 'info', present.includes('publisher.logo') ? 'Logo present' : 'Missing publisher logo', 'info'));
       }
     }
+    // Date format validation
+    const missing = (schema.missingFields as string[]) ?? [];
+    if (present.includes('datePublished:valid_format')) sd.push(ck('date_pub_fmt', 'datePublished format', 'pass', 'Valid ISO 8601', 'info'));
+    else if (missing.includes('datePublished:valid_format')) sd.push(ck('date_pub_fmt', 'datePublished format', 'warn', 'Not valid ISO 8601 — Google may ignore', 'warning'));
+    if (present.includes('dateModified:valid_format')) sd.push(ck('date_mod_fmt', 'dateModified format', 'pass', 'Valid ISO 8601', 'info'));
+    else if (missing.includes('dateModified:valid_format')) sd.push(ck('date_mod_fmt', 'dateModified format', 'warn', 'Not valid ISO 8601', 'warning'));
+
+    // isAccessibleForFree (paywall)
+    if (present.includes('isAccessibleForFree')) {
+      sd.push(ck('paywall', 'isAccessibleForFree', 'pass', present.includes('hasPart (paywall sections)') ? 'Paywall markup with hasPart sections' : 'Free access declared', 'info'));
+    }
+
+    // Author @type validation
+    if (missing.includes('author:typed_object')) sd.push(ck('author_type', 'Author @type', 'warn', 'Author is a plain string — use @type Person', 'warning'));
+
     const hasBreadcrumb = types.includes('BreadcrumbList') || present.includes('BreadcrumbList');
     sd.push(ck('breadcrumb', 'BreadcrumbList schema', hasBreadcrumb ? 'pass' : 'info', hasBreadcrumb ? 'BreadcrumbList found' : 'No BreadcrumbList schema', 'info'));
   }
@@ -221,9 +311,15 @@ function buildArticleChecklist(row: AuditResultRow): CheckGroup[] {
   // 4. News SEO Signals
   const news: CheckItem[] = [];
   if (meta) {
+    const og = meta.ogTags as Record<string, unknown> | null;
+    const pubTime = og?.articlePublishedTime as string | null;
+    const modTime = og?.articleModifiedTime as string | null;
+    news.push(ck('og_pub_time', 'article:published_time', pubTime ? 'pass' : 'warn', pubTime ? pubTime : 'Missing — important for freshness signals & Discover', 'warning'));
+    news.push(ck('og_mod_time', 'article:modified_time', modTime ? 'pass' : 'info', modTime ? modTime : 'Not set', 'info'));
     news.push(ck('author_byline', 'Author / byline on page', meta.hasAuthorByline ? 'pass' : 'info', meta.hasAuthorByline ? 'Author byline detected' : 'No visible author byline', 'info'));
     news.push(ck('publish_date', 'Publish date visible on page', meta.hasPublishDate ? 'pass' : 'warn', meta.hasPublishDate ? 'Date element detected' : 'No visible publish date', 'warning'));
     news.push(ck('main_image', 'Main article image', meta.hasMainImage ? 'pass' : 'warn', meta.hasMainImage ? 'Main image detected' : 'No prominent image found', 'warning'));
+    if (meta.hasAmpLink) news.push(ck('amp_link', 'AMP version', 'info', `AMP alternate: ${meta.ampUrl ? String(meta.ampUrl) : 'detected'}`, 'info'));
   }
   if (news.length > 0) groups.push({ id: 'news_seo', title: 'News SEO Signals', icon: <Newspaper className="w-4 h-4" />, checks: news });
 
@@ -244,20 +340,15 @@ function buildArticleChecklist(row: AuditResultRow): CheckGroup[] {
   }
   if (social.length > 0) groups.push({ id: 'social', title: 'Open Graph & Social', icon: <Link className="w-4 h-4" />, checks: social });
 
-  // 6. Performance & Mobile
-  const perfGroup: CheckItem[] = [];
-  if (perf) {
-    const loadMs = perf.loadMs as number | null;
-    if (loadMs != null) perfGroup.push(ck('load_time', 'Page load time', loadMs < 3000 ? 'pass' : loadMs < 5000 ? 'warn' : 'fail', `${loadMs}ms`, loadMs >= 5000 ? 'critical' : 'warning'));
-    const htmlKb = perf.htmlKb as number | null;
-    if (htmlKb != null) perfGroup.push(ck('html_size', 'HTML size', htmlKb < 200 ? 'pass' : htmlKb < 500 ? 'warn' : 'fail', `${htmlKb} KB`, 'warning'));
-  }
-  if (meta) {
-    perfGroup.push(ck('viewport', 'Mobile viewport', meta.hasViewport ? 'pass' : 'warn', meta.hasViewport ? 'Viewport meta present' : 'Missing viewport meta', 'warning'));
-  }
-  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance & Mobile', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
+  // 6. Performance & CWV
+  const perfGroup = buildPerfChecks(perf, meta);
+  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance & CWV', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
 
-  // 7. Pagination (only if detected)
+  // 7. International (hreflang — only if tags exist)
+  const hreflangItems = buildHreflangChecks(meta);
+  if (hreflangItems.length > 0) groups.push({ id: 'international', title: 'International (hreflang)', icon: <Globe className="w-4 h-4" />, checks: hreflangItems });
+
+  // 8. Pagination (only if detected)
   if (pagination && (pagination.detectedPagination as boolean)) {
     const pagGroup: CheckItem[] = [];
     pagGroup.push(ck('pagination', 'Pagination pattern', 'info', `Pattern: ${String(pagination.pattern)}`, 'info'));
@@ -291,6 +382,7 @@ function buildAuthorChecklist(row: AuditResultRow): CheckGroup[] {
       idx.push(ck('canonical_match', 'Canonical matches author page URL', canonical.match ? 'pass' : 'warn', canonical.match ? 'Self-referencing canonical' : 'Canonical differs from page URL', 'critical'));
     }
   }
+  idx.push(...buildTechMetaChecks(data));
   if (idx.length > 0) groups.push({ id: 'indexability', title: 'Indexability', icon: <FileSearch className="w-4 h-4" />, checks: idx });
 
   // 2. Content & Metadata
@@ -329,14 +421,13 @@ function buildAuthorChecklist(row: AuditResultRow): CheckGroup[] {
   }
   if (sd.length > 0) groups.push({ id: 'structured_data', title: 'Structured Data', icon: <Code2 className="w-4 h-4" />, checks: sd });
 
-  // 4. Performance
-  const perfGroup: CheckItem[] = [];
-  if (perf) {
-    const loadMs = perf.loadMs as number | null;
-    if (loadMs != null) perfGroup.push(ck('load_time', 'Page load time', loadMs < 3000 ? 'pass' : loadMs < 5000 ? 'warn' : 'fail', `${loadMs}ms`, loadMs >= 5000 ? 'critical' : 'warning'));
-  }
-  if (meta) perfGroup.push(ck('viewport', 'Mobile viewport', meta.hasViewport ? 'pass' : 'warn', meta.hasViewport ? 'Viewport present' : 'Missing viewport', 'warning'));
-  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
+  // 4. International (hreflang)
+  const hreflangAuthorItems = buildHreflangChecks(meta);
+  if (hreflangAuthorItems.length > 0) groups.push({ id: 'international', title: 'International (hreflang)', icon: <Globe className="w-4 h-4" />, checks: hreflangAuthorItems });
+
+  // 5. Performance & CWV
+  const perfGroup = buildPerfChecks(perf, meta);
+  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance & CWV', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
 
   return groups;
 }
@@ -363,6 +454,7 @@ function buildVideoChecklist(row: AuditResultRow): CheckGroup[] {
       idx.push(ck('canonical_match', 'Canonical matches video page URL', canonical.match ? 'pass' : 'warn', canonical.match ? 'Self-referencing canonical' : 'Canonical differs from page URL', 'critical'));
     }
   }
+  idx.push(...buildTechMetaChecks(data));
   if (idx.length > 0) groups.push({ id: 'indexability', title: 'Indexability', icon: <FileSearch className="w-4 h-4" />, checks: idx });
 
   // 2. Content & Metadata
@@ -421,14 +513,13 @@ function buildVideoChecklist(row: AuditResultRow): CheckGroup[] {
   }
   if (social.length > 0) groups.push({ id: 'social', title: 'Open Graph & Social', icon: <Link className="w-4 h-4" />, checks: social });
 
-  // 5. Performance
-  const perfGroup: CheckItem[] = [];
-  if (perf) {
-    const loadMs = perf.loadMs as number | null;
-    if (loadMs != null) perfGroup.push(ck('load_time', 'Page load time', loadMs < 3000 ? 'pass' : loadMs < 5000 ? 'warn' : 'fail', `${loadMs}ms`, loadMs >= 5000 ? 'critical' : 'warning'));
-  }
-  if (meta) perfGroup.push(ck('viewport', 'Mobile viewport', meta.hasViewport ? 'pass' : 'warn', meta.hasViewport ? 'Viewport present' : 'Missing viewport', 'warning'));
-  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
+  // 5. International (hreflang)
+  const hreflangVideoItems = buildHreflangChecks(meta);
+  if (hreflangVideoItems.length > 0) groups.push({ id: 'international', title: 'International (hreflang)', icon: <Globe className="w-4 h-4" />, checks: hreflangVideoItems });
+
+  // 6. Performance & CWV
+  const perfGroup = buildPerfChecks(perf, meta);
+  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance & CWV', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
 
   return groups;
 }
@@ -459,6 +550,7 @@ function buildSectionChecklist(row: AuditResultRow, siteChecks: Record<string, u
       idx.push(ck('canonical_clean', 'Canonical ignores query strings', !hasQuery ? 'pass' : 'warn', hasQuery ? 'Canonical contains query parameters' : 'Clean canonical URL', 'warning'));
     }
   }
+  idx.push(...buildTechMetaChecks(data));
   if (idx.length > 0) groups.push({ id: 'indexability', title: 'Indexability', icon: <FileSearch className="w-4 h-4" />, checks: idx });
 
   // 2. Content & Metadata
@@ -497,14 +589,13 @@ function buildSectionChecklist(row: AuditResultRow, siteChecks: Record<string, u
     groups.push({ id: 'pagination', title: 'Pagination', icon: <FileSearch className="w-4 h-4" />, checks: pagGroup });
   }
 
-  // 5. Performance
-  const perfGroup: CheckItem[] = [];
-  if (perf) {
-    const loadMs = perf.loadMs as number | null;
-    if (loadMs != null) perfGroup.push(ck('load_time', 'Page load time', loadMs < 3000 ? 'pass' : loadMs < 5000 ? 'warn' : 'fail', `${loadMs}ms`, loadMs >= 5000 ? 'critical' : 'warning'));
-  }
-  if (meta) perfGroup.push(ck('viewport', 'Mobile viewport', meta.hasViewport ? 'pass' : 'warn', meta.hasViewport ? 'Viewport present' : 'Missing viewport', 'warning'));
-  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
+  // 5. International (hreflang)
+  const hreflangSectionItems = buildHreflangChecks(meta);
+  if (hreflangSectionItems.length > 0) groups.push({ id: 'international', title: 'International (hreflang)', icon: <Globe className="w-4 h-4" />, checks: hreflangSectionItems });
+
+  // 6. Performance & CWV
+  const perfGroup = buildPerfChecks(perf, meta);
+  if (perfGroup.length > 0) groups.push({ id: 'performance', title: 'Performance & CWV', icon: <Zap className="w-4 h-4" />, checks: perfGroup });
 
   return groups;
 }
@@ -649,6 +740,25 @@ function SiteChecksSummary({ siteChecks, siteRecs }: { siteChecks: Record<string
               })()}
             </div>
           )}
+          {/* Robots.txt rules */}
+          {robots && (robots.rules as { userAgent: string; disallow: string[]; allow: string[] }[] | undefined)?.length ? (
+            <div className="text-xs mb-3">
+              <p className="font-medium text-slate-700 mb-1.5">robots.txt Rules:</p>
+              <div className="space-y-1.5 bg-slate-50 rounded-lg p-3 font-mono">
+                {(robots.rules as { userAgent: string; disallow: string[]; allow: string[] }[]).map((rule, i) => (
+                  <div key={i}>
+                    <span className="text-blue-700">User-agent: {rule.userAgent}</span>
+                    {rule.disallow.map((d, j) => (
+                      <div key={`d${j}`} className={`ml-4 ${d === '/' ? 'text-red-600 font-semibold' : 'text-slate-600'}`}>Disallow: {d}</div>
+                    ))}
+                    {rule.allow.map((a, j) => (
+                      <div key={`a${j}`} className="ml-4 text-green-600">Allow: {a}</div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {siteRecs.map((r, i) => (
             <div key={i} className="flex items-start gap-2 text-xs bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg">
               <span className="font-semibold text-amber-700 shrink-0">{r.priority}</span>
@@ -686,7 +796,18 @@ function RecommendationsPanel({ allRecs }: { allRecs: Recommendation[] }) {
       for (const r of byPriority[p]) lines.push(`[ ] [${r.area}] ${r.message} — ${r.fixHint}`);
       lines.push('');
     }
-    navigator.clipboard.writeText(lines.join('\n')).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+    navigator.clipboard.writeText(lines.join('\n')).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => { /* clipboard access denied */ });
+  };
+
+  const downloadCsv = () => {
+    const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
+    const rows = [['Priority', 'Area', 'Issue', 'Fix Hint'].join(',')];
+    for (const r of allRecs) rows.push([esc(r.priority), esc(r.area), esc(r.message), esc(r.fixHint)].join(','));
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'seo-audit-recommendations.csv'; a.click();
+    URL.revokeObjectURL(url);
   };
 
   const priorityColors: Record<string, string> = { P0: 'bg-red-50 border-red-200', P1: 'bg-amber-50 border-amber-200', P2: 'bg-blue-50 border-blue-200' };
@@ -698,6 +819,10 @@ function RecommendationsPanel({ allRecs }: { allRecs: Recommendation[] }) {
         <Map className="w-5 h-5 text-violet-600 shrink-0" />
         <h3 className="text-base font-semibold text-slate-900 flex-1">All Recommendations</h3>
         <span className="text-xs bg-slate-100 px-2 py-0.5 rounded-full text-slate-600">{allRecs.length}</span>
+        <button type="button" onClick={(e) => { e.stopPropagation(); downloadCsv(); }}
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-lg transition-colors">
+          <Download className="w-3.5 h-3.5" /> CSV
+        </button>
         <button type="button" onClick={(e) => { e.stopPropagation(); copyChecklist(); }}
           className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-lg transition-colors">
           {copied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
@@ -749,6 +874,64 @@ function ScoreCircle({ pass, warn, fail }: { pass: number; warn: number; fail: n
         </div>
       </div>
       <p className="text-xs text-slate-500 mt-1">Score</p>
+    </div>
+  );
+}
+
+/* ── Executive Summary ─────────────────────────────────────────── */
+
+function ExecutiveSummary({ score, allRecs, pageResults }: {
+  score: number;
+  allRecs: Recommendation[];
+  pageResults: { title: string; url: string; pass: number; warn: number; fail: number }[];
+}) {
+  const [open, setOpen] = useState(true);
+  const healthLabel = score >= 80 ? 'Good' : score >= 50 ? 'Needs Work' : 'Critical';
+  const healthColor = score >= 80 ? 'text-green-700 bg-green-100' : score >= 50 ? 'text-amber-700 bg-amber-100' : 'text-red-700 bg-red-100';
+  const top3 = allRecs.slice(0, 3);
+
+  return (
+    <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-3 px-6 py-4 text-left hover:bg-slate-50 transition-colors">
+        {open ? <ChevronDown className="w-5 h-5 text-slate-400 shrink-0" /> : <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />}
+        <AlertCircle className="w-5 h-5 text-blue-600 shrink-0" />
+        <h3 className="text-base font-semibold text-slate-900 flex-1">Executive Summary</h3>
+        <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${healthColor}`}>{healthLabel}</span>
+      </button>
+      {open && (
+        <div className="border-t border-slate-100 px-6 py-4 space-y-4">
+          {top3.length > 0 && (
+            <div>
+              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Top Issues</h4>
+              <div className="space-y-1.5">
+                {top3.map((r, i) => (
+                  <div key={i} className="flex items-start gap-2 text-xs">
+                    <span className={`font-bold shrink-0 ${r.priority === 'P0' ? 'text-red-600' : r.priority === 'P1' ? 'text-amber-600' : 'text-blue-600'}`}>{r.priority}</span>
+                    <span className="text-slate-700">{r.message}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {pageResults.length > 0 && (
+            <div>
+              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Per-Page Status</h4>
+              <div className="space-y-1">
+                {pageResults.map((p, i) => (
+                  <div key={i} className="flex items-center gap-3 text-xs">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${p.fail > 0 ? 'bg-red-500' : p.warn > 0 ? 'bg-amber-500' : 'bg-green-500'}`} />
+                    <span className="font-medium text-slate-800 w-28 truncate">{p.title}</span>
+                    <span className="text-slate-400 flex-1 truncate font-mono">{p.url}</span>
+                    <span className="text-green-600">{p.pass}P</span>
+                    {p.warn > 0 && <span className="text-amber-600">{p.warn}W</span>}
+                    {p.fail > 0 && <span className="text-red-600">{p.fail}F</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -949,6 +1132,22 @@ export default function SEOAgent() {
   const passCount = allChecks.filter(c => c.status === 'pass').length;
   const warnCount = allChecks.filter(c => c.status === 'warn').length;
   const failCount = allChecks.filter(c => c.status === 'fail').length;
+  const totalScored = passCount + warnCount + failCount;
+  const overallScore = totalScored > 0 ? Math.round(((passCount + warnCount * 0.5) / totalScored) * 100) : 0;
+
+  // Build per-page status for executive summary
+  const pageResultsSummary: { title: string; url: string; pass: number; warn: number; fail: number }[] = [];
+  const addPageSummary = (title: string, url: string, groups: CheckGroup[]) => {
+    const checks = groups.flatMap(g => g.checks);
+    pageResultsSummary.push({ title, url, pass: checks.filter(c => c.status === 'pass').length, warn: checks.filter(c => c.status === 'warn').length, fail: checks.filter(c => c.status === 'fail').length });
+  };
+  if (homeResult && homeGroups.length > 0) addPageSummary('Homepage', homeResult.url, homeGroups);
+  if (articleResult && articleGroups.length > 0) addPageSummary('Article', articleResult.url, articleGroups);
+  for (const { row, groups } of otherGroupsList) {
+    const pt = (row.data?.pageType as string) ?? 'unknown';
+    const labels: Record<string, string> = { section: 'Section', tag: 'Tag', search: 'Search', author: 'Author', video_article: 'Video' };
+    if (groups.length > 0) addPageSummary(labels[pt] ?? pt, row.url, groups);
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -1039,6 +1238,8 @@ export default function SEOAgent() {
                 </div>
               </div>
             </div>
+
+            <ExecutiveSummary score={overallScore} allRecs={allRecs} pageResults={pageResultsSummary} />
 
             <SiteChecksSummary siteChecks={runData.siteChecks} siteRecs={runData.siteRecommendations} />
 

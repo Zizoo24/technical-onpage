@@ -184,10 +184,17 @@ function validateSitemapStandards(text: string): SitemapStandards {
 type RobotsStatus = 'FOUND' | 'NOT_FOUND' | 'BLOCKED' | 'ERROR';
 type SitemapStatus = 'VALID' | 'SOFT_404' | 'NOT_FOUND' | 'ERROR' | 'NONE_FOUND';
 
+interface RobotsRule {
+  userAgent: string;
+  disallow: string[];
+  allow: string[];
+}
+
 interface RobotsResult {
   status: RobotsStatus;
   httpStatus: number;
   sitemapsFound: string[];
+  rules: RobotsRule[];
   notes: string[];
 }
 
@@ -226,6 +233,7 @@ async function checkRobots(origin: string): Promise<RobotsResult> {
     status: 'ERROR',
     httpStatus: 0,
     sitemapsFound: [],
+    rules: [],
     notes: [],
   };
 
@@ -245,20 +253,59 @@ async function checkRobots(origin: string): Promise<RobotsResult> {
       return result;
     }
 
-    // Parse "Sitemap:" lines (case-insensitive)
+    // Parse robots.txt directives
+    let currentUA = '';
+    let currentDisallow: string[] = [];
+    let currentAllow: string[] = [];
+
+    const flushRule = () => {
+      if (currentUA && (currentDisallow.length > 0 || currentAllow.length > 0)) {
+        result.rules.push({ userAgent: currentUA, disallow: [...currentDisallow], allow: [...currentAllow] });
+      }
+    };
+
     for (const line of res.text.split(/\r?\n/)) {
-      const match = line.match(/^\s*sitemap\s*:\s*(.+)/i);
-      if (match) {
-        const url = match[1].trim();
-        if (/^https?:\/\//i.test(url)) {
-          result.sitemapsFound.push(url);
-        }
+      const trimmed = line.replace(/#.*$/, '').trim();
+      if (!trimmed) continue;
+
+      const sitemapMatch = trimmed.match(/^sitemap\s*:\s*(.+)/i);
+      if (sitemapMatch) {
+        const url = sitemapMatch[1].trim();
+        if (/^https?:\/\//i.test(url)) result.sitemapsFound.push(url);
+        continue;
+      }
+
+      const uaMatch = trimmed.match(/^user-agent\s*:\s*(.+)/i);
+      if (uaMatch) {
+        flushRule();
+        currentUA = uaMatch[1].trim();
+        currentDisallow = [];
+        currentAllow = [];
+        continue;
+      }
+
+      const disallowMatch = trimmed.match(/^disallow\s*:\s*(.*)/i);
+      if (disallowMatch && disallowMatch[1].trim()) {
+        currentDisallow.push(disallowMatch[1].trim());
+        continue;
+      }
+
+      const allowMatch = trimmed.match(/^allow\s*:\s*(.*)/i);
+      if (allowMatch && allowMatch[1].trim()) {
+        currentAllow.push(allowMatch[1].trim());
       }
     }
+    flushRule();
 
     result.status = 'FOUND';
     if (result.sitemapsFound.length === 0) {
       result.notes.push('robots.txt exists but contains no Sitemap: directives');
+    }
+
+    // Flag dangerous rules
+    const wildcardRule = result.rules.find(r => r.userAgent === '*');
+    if (wildcardRule?.disallow.includes('/')) {
+      result.notes.push('WARNING: robots.txt blocks all crawling (Disallow: /)');
     }
   } catch (err: unknown) {
     result.status = 'ERROR';
@@ -479,6 +526,7 @@ export async function runSiteChecks(domain: string): Promise<SiteChecksResult> {
         status: 'ERROR',
         httpStatus: 0,
         sitemapsFound: [],
+        rules: [],
         notes: ['Invalid domain'],
       },
       sitemap: {
@@ -501,6 +549,7 @@ export async function runSiteChecks(domain: string): Promise<SiteChecksResult> {
       status: 'ERROR',
       httpStatus: 0,
       sitemapsFound: [],
+      rules: [],
       notes: [`Unexpected error: ${err instanceof Error ? err.message : 'unknown'}`],
     };
   }

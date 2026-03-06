@@ -10,12 +10,19 @@ export interface OgTags {
   image: string | null;
   type: string | null;
   url: string | null;
+  articlePublishedTime: string | null;
+  articleModifiedTime: string | null;
 }
 
 export interface TwitterTags {
   card: string | null;
   title: string | null;
   image: string | null;
+}
+
+export interface HreflangEntry {
+  hreflang: string;
+  href: string;
 }
 
 export interface ContentMetaResult {
@@ -29,6 +36,7 @@ export interface ContentMetaResult {
   h1Count: number;
   h1Ok: boolean;
   robotsMeta: { noindex: boolean; nofollow: boolean };
+  xRobotsTag: { noindex: boolean; nofollow: boolean } | null;
   duplicateTitle: boolean;
   wordCount: number;
   hasAuthorByline: boolean;
@@ -37,6 +45,13 @@ export interface ContentMetaResult {
   ogTags: OgTags;
   twitterTags: TwitterTags;
   hasViewport: boolean;
+  charset: string | null;
+  lang: string | null;
+  hreflangTags: HreflangEntry[];
+  hasAmpLink: boolean;
+  ampUrl: string | null;
+  internalLinkCount: number;
+  externalLinkCount: number;
   warnings: string[];
 }
 
@@ -80,7 +95,18 @@ function extractOgTags(html: string): OgTags {
       html.match(new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:${prop}["']`, 'i'));
     return m ? m[1] : null;
   };
-  return { title: get('title'), description: get('description'), image: get('image'), type: get('type'), url: get('url') };
+  // Also extract article:published_time and article:modified_time
+  const getArticle = (prop: string): string | null => {
+    const m =
+      html.match(new RegExp(`<meta[^>]*property=["']article:${prop}["'][^>]*content=["']([^"']*)["']`, 'i')) ??
+      html.match(new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*property=["']article:${prop}["']`, 'i'));
+    return m ? m[1] : null;
+  };
+  return {
+    title: get('title'), description: get('description'), image: get('image'), type: get('type'), url: get('url'),
+    articlePublishedTime: getArticle('published_time'),
+    articleModifiedTime: getArticle('modified_time'),
+  };
 }
 
 function extractTwitterTags(html: string): TwitterTags {
@@ -130,10 +156,66 @@ function hasViewport(html: string): boolean {
   return /<meta[^>]*name=["']viewport["']/i.test(html);
 }
 
+function extractCharset(html: string): string | null {
+  const m = html.match(/<meta[^>]*charset=["']?([^"'\s>]+)/i);
+  if (m) return m[1];
+  const m2 = html.match(/<meta[^>]*http-equiv=["']content-type["'][^>]*content=["'][^"']*charset=([^"'\s;]+)/i);
+  return m2 ? m2[1] : null;
+}
+
+function extractLang(html: string): string | null {
+  const m = html.match(/<html[^>]*\slang=["']([^"']+)["']/i);
+  return m ? m[1] : null;
+}
+
+function extractHreflangTags(html: string): HreflangEntry[] {
+  const tags: HreflangEntry[] = [];
+  const re = /<link[^>]*rel=["']alternate["'][^>]*hreflang=["']([^"']+)["'][^>]*href=["']([^"']+)["'][^>]*>/gi;
+  const re2 = /<link[^>]*hreflang=["']([^"']+)["'][^>]*href=["']([^"']+)["'][^>]*rel=["']alternate["'][^>]*>/gi;
+  const re3 = /<link[^>]*href=["']([^"']+)["'][^>]*hreflang=["']([^"']+)["'][^>]*rel=["']alternate["'][^>]*>/gi;
+  let m: RegExpExecArray | null;
+  const seen = new Set<string>();
+  for (const regex of [re, re2]) {
+    while ((m = regex.exec(html)) !== null) {
+      const key = `${m[1]}|${m[2]}`;
+      if (!seen.has(key)) { seen.add(key); tags.push({ hreflang: m[1], href: m[2] }); }
+    }
+  }
+  while ((m = re3.exec(html)) !== null) {
+    const key = `${m[2]}|${m[1]}`;
+    if (!seen.has(key)) { seen.add(key); tags.push({ hreflang: m[2], href: m[1] }); }
+  }
+  return tags;
+}
+
+function extractAmpLink(html: string): string | null {
+  const m = html.match(/<link[^>]*rel=["']amphtml["'][^>]*href=["']([^"']+)["']/i) ??
+            html.match(/<link[^>]*href=["']([^"']+)["'][^>]*rel=["']amphtml["']/i);
+  return m ? m[1] : null;
+}
+
+function countLinks(html: string, pageUrl: string): { internal: number; external: number } {
+  let pageHost: string;
+  try { pageHost = new URL(pageUrl).hostname; } catch { return { internal: 0, external: 0 }; }
+
+  let internal = 0, external = 0;
+  const re = /<a[^>]*href=["']([^"'#]+)["'][^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    try {
+      const u = new URL(m[1], pageUrl);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+      if (u.hostname === pageHost) internal++; else external++;
+    } catch { /* skip invalid */ }
+  }
+  return { internal, external };
+}
+
 export function runContentMetaCheck(
   html: string,
   pageType: PageType,
   seenTitles: Set<string>,
+  opts: { pageUrl?: string; xRobotsTag?: string } = {},
 ): ContentMetaResult {
   const warnings: string[] = [];
 
@@ -211,6 +293,22 @@ export function runContentMetaCheck(
   const ogTags = extractOgTags(html);
   const twitterTags = extractTwitterTags(html);
 
+  // X-Robots-Tag from HTTP headers
+  let xRobotsTag: { noindex: boolean; nofollow: boolean } | null = null;
+  if (opts.xRobotsTag) {
+    const xrt = opts.xRobotsTag.toLowerCase();
+    xRobotsTag = { noindex: xrt.includes('noindex'), nofollow: xrt.includes('nofollow') };
+    if (xRobotsTag.noindex) warnings.push('X-Robots-Tag HTTP header contains noindex');
+    if (xRobotsTag.nofollow) warnings.push('X-Robots-Tag HTTP header contains nofollow');
+  }
+
+  // Link counts
+  const pageUrl = opts.pageUrl ?? '';
+  const linkCounts = pageUrl ? countLinks(html, pageUrl) : { internal: 0, external: 0 };
+
+  // AMP link
+  const ampUrl = extractAmpLink(html);
+
   return {
     title,
     titleLen,
@@ -222,6 +320,7 @@ export function runContentMetaCheck(
     h1Count: h1s.length,
     h1Ok,
     robotsMeta,
+    xRobotsTag,
     duplicateTitle,
     wordCount,
     hasAuthorByline: hasAuthorByline(html),
@@ -230,6 +329,13 @@ export function runContentMetaCheck(
     ogTags,
     twitterTags,
     hasViewport: hasViewport(html),
+    charset: extractCharset(html),
+    lang: extractLang(html),
+    hreflangTags: extractHreflangTags(html),
+    hasAmpLink: ampUrl !== null,
+    ampUrl,
+    internalLinkCount: linkCounts.internal,
+    externalLinkCount: linkCounts.external,
     warnings,
   };
 }

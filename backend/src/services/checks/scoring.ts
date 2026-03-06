@@ -44,6 +44,7 @@ interface CheckData {
     presentFields?: string[];
     notes: string[];
   } | null;
+  redirectCount?: number;
   contentMeta?: {
     title?: string | null;
     titleLen?: number;
@@ -55,14 +56,21 @@ interface CheckData {
     h1Count?: number;
     h1Ok: boolean;
     robotsMeta: { noindex: boolean; nofollow: boolean };
+    xRobotsTag?: { noindex: boolean; nofollow: boolean } | null;
     duplicateTitle: boolean;
     wordCount?: number;
     hasAuthorByline?: boolean;
     hasPublishDate?: boolean;
     hasMainImage?: boolean;
-    ogTags?: { title: string | null; image: string | null; type: string | null };
+    ogTags?: { title: string | null; image: string | null; type: string | null; articlePublishedTime?: string | null; articleModifiedTime?: string | null };
     twitterTags?: { card: string | null; title: string | null; image: string | null };
     hasViewport?: boolean;
+    charset?: string | null;
+    lang?: string | null;
+    hreflangTags?: { hreflang: string; href: string }[];
+    hasAmpLink?: boolean;
+    internalLinkCount?: number;
+    externalLinkCount?: number;
     warnings: string[];
   } | null;
   pagination?: {
@@ -170,6 +178,19 @@ export function scoreResult(data: CheckData): ScoringResult {
               priority: 'P1', area: 'schema',
               message: `Article schema missing: ${field}`,
               fixHint: `Add "${field}" to your NewsArticle/Article JSON-LD.`,
+            });
+          } else if (field === 'datePublished:valid_format' || field === 'dateModified:valid_format') {
+            escalate('WARN');
+            recs.push({
+              priority: 'P1', area: 'schema',
+              message: `${field.replace(':valid_format', '')} is not valid ISO 8601 format`,
+              fixHint: 'Use ISO 8601 date format (e.g. 2024-01-15T10:30:00+00:00).',
+            });
+          } else if (field === 'author:typed_object') {
+            recs.push({
+              priority: 'P1', area: 'schema',
+              message: 'Author is a plain string instead of @type Person object',
+              fixHint: 'Change author to {"@type": "Person", "name": "Author Name"}.',
             });
           } else if (field === 'dateModified' || field === 'publisher') {
             recs.push({
@@ -370,6 +391,64 @@ export function scoreResult(data: CheckData): ScoringResult {
         fixHint: 'Add <meta name="viewport" content="width=device-width, initial-scale=1">.',
       });
     }
+
+    // X-Robots-Tag
+    if (data.contentMeta.xRobotsTag?.noindex) {
+      escalate('FAIL');
+      recs.push({
+        priority: 'P0', area: 'meta',
+        message: 'X-Robots-Tag HTTP header contains noindex',
+        fixHint: 'Remove noindex from X-Robots-Tag header (often set by CDN or server config).',
+      });
+    }
+
+    // Charset
+    if (!data.contentMeta.charset) {
+      recs.push({
+        priority: 'P2', area: 'meta',
+        message: 'Missing charset declaration',
+        fixHint: 'Add <meta charset="UTF-8"> in <head>.',
+      });
+    }
+
+    // Lang attribute
+    if (!data.contentMeta.lang) {
+      recs.push({
+        priority: 'P2', area: 'meta',
+        message: 'Missing lang attribute on <html> tag',
+        fixHint: 'Add lang="en" (or appropriate language) to the <html> element.',
+      });
+    }
+
+    // Article OG time tags
+    if (pageType === 'article') {
+      if (!data.contentMeta.ogTags?.articlePublishedTime) {
+        recs.push({
+          priority: 'P1', area: 'news',
+          message: 'Missing article:published_time OG tag',
+          fixHint: 'Add <meta property="article:published_time"> with ISO 8601 date for freshness signals.',
+        });
+      }
+
+      // Internal links
+      if (data.contentMeta.internalLinkCount !== undefined && data.contentMeta.internalLinkCount < 3) {
+        recs.push({
+          priority: 'P1', area: 'content',
+          message: `Only ${data.contentMeta.internalLinkCount} internal links on article page`,
+          fixHint: 'Add at least 3 internal links to related articles and section pages.',
+        });
+      }
+    }
+  }
+
+  // ── Redirect chain ────────────────────────────────────────────
+  if (data.redirectCount && data.redirectCount > 2) {
+    escalate('WARN');
+    recs.push({
+      priority: 'P1', area: 'performance',
+      message: `Redirect chain: ${data.redirectCount} hops before reaching final URL`,
+      fixHint: 'Reduce redirect chain to 1 hop maximum to preserve link equity and speed.',
+    });
   }
 
   // ── Pagination ─────────────────────────────────────────────────
@@ -410,7 +489,11 @@ export function scoreResult(data: CheckData): ScoringResult {
 // ── Score site-level checks ─────────────────────────────────────
 
 interface SiteChecksData {
-  robots?: { status: string; notes?: string[] };
+  robots?: {
+    status: string;
+    notes?: string[];
+    rules?: { userAgent: string; disallow: string[]; allow: string[] }[];
+  };
   sitemap?: {
     status: string;
     errors?: string[];
@@ -447,6 +530,36 @@ export function scoreSiteChecks(data: SiteChecksData | null): Recommendation[] {
         message: 'robots.txt could not be checked',
         fixHint: 'Verify the domain is reachable.',
       });
+    }
+
+    // Robots.txt rule analysis
+    if (data.robots.rules) {
+      const wildcardRule = data.robots.rules.find(r => r.userAgent === '*');
+      if (wildcardRule?.disallow.includes('/')) {
+        recs.push({
+          priority: 'P0', area: 'robots',
+          message: 'robots.txt blocks all crawling with Disallow: /',
+          fixHint: 'Remove "Disallow: /" under User-agent: * to allow search engines to crawl your site.',
+        });
+      }
+      // Check for Googlebot-News blocked
+      const newsRule = data.robots.rules.find(r => r.userAgent.toLowerCase() === 'googlebot-news');
+      if (newsRule?.disallow.includes('/')) {
+        recs.push({
+          priority: 'P0', area: 'robots',
+          message: 'robots.txt blocks Googlebot-News from crawling entire site',
+          fixHint: 'Remove "Disallow: /" under User-agent: Googlebot-News to appear in Google News.',
+        });
+      }
+    }
+
+    // Notes with warnings
+    if (data.robots.notes) {
+      for (const note of data.robots.notes) {
+        if (note.includes('blocks all crawling')) {
+          // Already covered above
+        }
+      }
     }
   }
 

@@ -1,6 +1,7 @@
 /**
  * Optional Supabase client — returns null if env vars are not set.
  */
+import process from 'node:process';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 let _client: SupabaseClient | null = null;

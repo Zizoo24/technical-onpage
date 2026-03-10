@@ -18,7 +18,7 @@ import { scoreResult, scoreSiteChecks } from '../services/checks/scoring.js';
 
 export const auditRunsRouter = Router();
 
-const PAGE_TIMEOUT = 15_000;
+const PAGE_TIMEOUT = 25_000;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 // ── SSRF guard ──────────────────────────────────────────────────
@@ -76,6 +76,14 @@ async function auditSingleUrl(
         html = await hopRes.text();
         fetchOk = true;
         xRobotsTag = hopRes.headers.get('x-robots-tag') ?? '';
+      } else if (httpStatus === 403 || httpStatus === 451 || httpStatus === 200) {
+        // Try to extract HTML from soft-paywall / bot-challenged pages
+        const body = await hopRes.text();
+        if (body.length > 500 && /<html/i.test(body)) {
+          html = body;
+          fetchOk = true;
+          xRobotsTag = hopRes.headers.get('x-robots-tag') ?? '';
+        }
       }
       break;
     }

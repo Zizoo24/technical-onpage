@@ -61,9 +61,12 @@ function extractTitle(html: string): string | null {
 }
 
 function extractDescription(html: string): string | null {
+  // Try double-quote delimited first, then single-quote, matching the same quote style
   const m =
-    html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i) ??
-    html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*name=["']description["']/i);
+    html.match(/<meta[^>]*name=["']description["'][^>]*content="([^"]*)"/i) ??
+    html.match(/<meta[^>]*name=["']description["'][^>]*content='([^']*)'/i) ??
+    html.match(/<meta[^>]*content="([^"]*)"[^>]*name=["']description["']/i) ??
+    html.match(/<meta[^>]*content='([^']*)'[^>]*name=["']description["']/i);
   return m ? m[1] : null;
 }
 

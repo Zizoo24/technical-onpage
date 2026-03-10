@@ -11,7 +11,7 @@ const SITEMAP_TIMEOUT = 20_000;
 const MAX_SITEMAP_URLS = 12;
 const MAX_CHILD_SITEMAPS = 5;
 const MAX_CHILD_SIZE = 5 * 1024 * 1024; // 5 MB
-const UA = 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 const FALLBACK_SITEMAP_PATHS = [
   '/sitemap.xml',
@@ -238,8 +238,11 @@ async function checkRobots(origin: string): Promise<RobotsResult> {
   };
 
   try {
-    const res = await safeFetch(`${origin}/robots.txt`, ROBOTS_TIMEOUT);
+    const robotsUrl = `${origin}/robots.txt`;
+    console.log(`[robots] Fetching ${robotsUrl}`);
+    const res = await safeFetch(robotsUrl, ROBOTS_TIMEOUT);
     result.httpStatus = res.status;
+    console.log(`[robots] HTTP ${res.status}, content-length: ${res.text.length}, content-type: ${res.contentType}`);
 
     if (res.status === 401 || res.status === 403) {
       result.status = 'BLOCKED';
@@ -298,6 +301,7 @@ async function checkRobots(origin: string): Promise<RobotsResult> {
     flushRule();
 
     result.status = 'FOUND';
+    console.log(`[robots] Parsed: ${result.rules.length} rule(s), ${result.sitemapsFound.length} sitemap(s): ${result.sitemapsFound.join(', ') || '(none)'}`);
     if (result.sitemapsFound.length === 0) {
       result.notes.push('robots.txt exists but contains no Sitemap: directives');
     }
@@ -331,25 +335,36 @@ async function validateSitemap(
     warnings: [],
   };
 
+  console.log(`[sitemap] Validating ${url} (discovered from: ${discoveredFrom})`);
   const res = await safeFetch(url, SITEMAP_TIMEOUT);
+  console.log(`[sitemap] HTTP ${res.status}, content-type: ${res.contentType}, length: ${res.text.length}`);
 
   if (!res.ok) {
     result.status = res.status === 404 ? 'NOT_FOUND' : 'ERROR';
     result.errors.push(`HTTP ${res.status} for ${url}`);
+    console.log(`[sitemap] FAIL: ${result.status} for ${url}`);
     return result;
   }
 
-  // Soft-404 detection
-  if (looksLikeHtml(res.text, res.contentType)) {
-    result.status = 'SOFT_404';
-    result.errors.push(`${url} returned HTML instead of XML (soft 404)`);
-    return result;
-  }
-
+  // Check for actual XML sitemap content FIRST — some servers serve valid
+  // sitemaps with Content-Type: text/html (misconfigured but content is valid)
   const root = xmlRoot(res.text);
-  if (!root) {
+  if (root) {
+    // Content is valid XML sitemap regardless of content-type header
+    if (looksLikeHtml(res.text, res.contentType) && !res.contentType.includes('xml')) {
+      console.log(`[sitemap] Content-Type is "${res.contentType}" but content is valid XML sitemap — accepting`);
+    }
+  } else {
+    // No valid XML root found — check if it's HTML (soft-404)
+    if (looksLikeHtml(res.text, res.contentType)) {
+      result.status = 'SOFT_404';
+      result.errors.push(`${url} returned HTML instead of XML (soft 404)`);
+      console.log(`[sitemap] FAIL: soft-404 (HTML response) for ${url}`);
+      return result;
+    }
     result.status = 'ERROR';
     result.errors.push(`${url} has no valid <urlset> or <sitemapindex> root`);
+    console.log(`[sitemap] FAIL: no valid XML root element for ${url}`);
     return result;
   }
 
@@ -462,17 +477,36 @@ async function discoverAndValidateSitemaps(
   // From robots.txt first
   for (const u of robotsSitemaps) {
     addCandidate(u, 'robots.txt');
-  }
-
-  // Fallback paths only if robots didn't provide any
-  if (robotsSitemaps.length === 0) {
-    for (const path of FALLBACK_SITEMAP_PATHS) {
-      addCandidate(`${origin}${path}`, 'fallback');
+    // If robots.txt has http:// but origin is https://, also try the https:// version
+    // Many robots.txt files have legacy http:// sitemap URLs
+    if (u.startsWith('http://') && origin.startsWith('https://')) {
+      const httpsVariant = u.replace(/^http:\/\//, 'https://');
+      addCandidate(httpsVariant, 'robots.txt (https)');
     }
   }
 
-  // Try each candidate until we find a valid one
+  console.log(`[sitemap] ${candidates.length} candidate(s) from robots.txt: ${candidates.map(c => c.url).join(', ')}`);
+
+  // Try each robots.txt candidate first
   for (const { url, source } of candidates) {
+    const result = await validateSitemap(url, source);
+    if (result.status === 'VALID') {
+      return result;
+    }
+  }
+
+  // If robots.txt sitemaps all failed validation, try fallback paths
+  const fallbackCandidates: Array<{ url: string; source: string }> = [];
+  for (const path of FALLBACK_SITEMAP_PATHS) {
+    const fullUrl = `${origin}${path}`;
+    const key = fullUrl.toLowerCase().replace(/\/+$/, '');
+    if (!seen.has(key)) {
+      seen.add(key);
+      fallbackCandidates.push({ url: fullUrl, source: 'fallback' });
+    }
+  }
+
+  for (const { url, source } of fallbackCandidates) {
     const result = await validateSitemap(url, source);
     if (result.status === 'VALID') {
       return result;
@@ -485,7 +519,7 @@ async function discoverAndValidateSitemaps(
     discoveredFrom: 'none',
     validatedRoot: null,
     type: null,
-    errors: [`No valid sitemap found among ${candidates.length} candidate(s)`],
+    errors: [`No valid sitemap found among ${candidates.length + fallbackCandidates.length} candidate(s)`],
     warnings: [],
   };
 }

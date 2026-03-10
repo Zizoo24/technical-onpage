@@ -9,7 +9,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getSupabase } from '../lib/supabase.js';
 import { runSiteChecks } from '../services/checks/siteChecks.js';
-import { runCanonicalCheck, detectPageType } from '../services/checks/page/canonicalCheck.js';
+import { runCanonicalCheck, detectPageType, detectPageTypeWithHtml } from '../services/checks/page/canonicalCheck.js';
 import { runStructuredDataCheck } from '../services/checks/page/structuredDataCheck.js';
 import { runContentMetaCheck } from '../services/checks/page/contentMetaCheck.js';
 import { runPaginationCheck } from '../services/checks/page/paginationCheck.js';
@@ -19,7 +19,7 @@ import { scoreResult, scoreSiteChecks } from '../services/checks/scoring.js';
 export const auditRunsRouter = Router();
 
 const PAGE_TIMEOUT = 15_000;
-const UA = 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 // ── SSRF guard ──────────────────────────────────────────────────
 
@@ -53,11 +53,11 @@ async function auditSingleUrl(
   let html = '', fetchOk = false, loadMs = 0;
   let xRobotsTag = '';
   let httpStatus = 0;
+  let currentUrl = url;
   const redirectChain: string[] = [];
   const fetchStart = Date.now();
   try {
     // Follow redirects manually to detect chains
-    let currentUrl = url;
     for (let hop = 0; hop < 6; hop++) {
       const hopRes = await fetch(currentUrl, {
         redirect: 'manual', signal: controller.signal,
@@ -82,19 +82,50 @@ async function auditSingleUrl(
   } finally { loadMs = Date.now() - fetchStart; clearTimeout(timer); }
 
   if (!fetchOk || !html) {
-    return { url, error: 'Fetch failed', status: 'FAIL', recommendations: ['Page could not be fetched'] };
+    return {
+      url, error: `Fetch failed (HTTP ${httpStatus})`, status: 'FAIL',
+      recommendations: [`Page could not be fetched — HTTP status ${httpStatus}`],
+      data: { httpStatus, redirectChain: redirectChain.length > 0 ? redirectChain : null },
+    };
   }
+
+  // Use the final URL after redirects for detection and canonical checks
+  const finalUrl = redirectChain.length > 0 ? currentUrl : url;
 
   // Prefer the explicit seed type if it's a known PageType, otherwise auto-detect
   const VALID_TYPES = ['home', 'section', 'article', 'search', 'tag', 'author', 'video_article'] as const;
+  const urlOnlyType = detectPageType(finalUrl);
   const pageType = (seedType && (VALID_TYPES as readonly string[]).includes(seedType))
     ? (seedType as typeof VALID_TYPES[number])
-    : detectPageType(url);
-  let canonical = null; try { canonical = runCanonicalCheck(html, url, pageType); } catch { /* */ }
-  let structuredData = null; try { structuredData = runStructuredDataCheck(html, pageType); } catch { /* */ }
-  let contentMeta = null; try { contentMeta = runContentMetaCheck(html, pageType, seenTitles, { pageUrl: url, xRobotsTag }); } catch { /* */ }
-  let pagination = null; try { pagination = runPaginationCheck(html, url, pageType, canonical?.canonicalUrl ?? null); } catch { /* */ }
-  let performance = null; try { performance = await runPerformanceCheck(url, html, loadMs); } catch { /* */ }
+    : detectPageTypeWithHtml(finalUrl, html);
+
+  // Run checks with error logging instead of silent swallowing
+  const checkErrors: string[] = [];
+  let canonical = null;
+  try { canonical = runCanonicalCheck(html, finalUrl, pageType); } catch (err) {
+    console.error(`[audit] canonicalCheck failed for ${url}:`, err);
+    checkErrors.push(`canonical: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+  let structuredData = null;
+  try { structuredData = runStructuredDataCheck(html, pageType); } catch (err) {
+    console.error(`[audit] structuredDataCheck failed for ${url}:`, err);
+    checkErrors.push(`structuredData: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+  let contentMeta = null;
+  try { contentMeta = runContentMetaCheck(html, pageType, seenTitles, { pageUrl: finalUrl, xRobotsTag }); } catch (err) {
+    console.error(`[audit] contentMetaCheck failed for ${url}:`, err);
+    checkErrors.push(`contentMeta: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+  let pagination = null;
+  try { pagination = runPaginationCheck(html, finalUrl, pageType, canonical?.canonicalUrl ?? null); } catch (err) {
+    console.error(`[audit] paginationCheck failed for ${url}:`, err);
+    checkErrors.push(`pagination: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
+  let performance = null;
+  try { performance = await runPerformanceCheck(finalUrl, html, loadMs); } catch (err) {
+    console.error(`[audit] performanceCheck failed for ${url}:`, err);
+    checkErrors.push(`performance: ${err instanceof Error ? err.message : 'unknown'}`);
+  }
 
   const toJson = (v: unknown) => JSON.parse(JSON.stringify(v));
   const data: Record<string, unknown> = {
@@ -102,11 +133,19 @@ async function auditSingleUrl(
     httpStatus,
     redirectChain: redirectChain.length > 0 ? redirectChain : null,
     redirectCount: redirectChain.length,
+    finalUrl: finalUrl !== url ? finalUrl : undefined,
+    detection: {
+      urlOnly: urlOnlyType,
+      withHtml: pageType,
+      seedType: seedType ?? null,
+      override: seedType ? (seedType !== urlOnlyType) : (pageType !== urlOnlyType),
+    },
     canonical: canonical ? toJson(canonical) : null,
     structuredData: structuredData ? toJson(structuredData) : null,
     contentMeta: contentMeta ? toJson(contentMeta) : null,
     pagination: pagination ? toJson(pagination) : null,
     performance: performance ? toJson(performance) : null,
+    checkErrors: checkErrors.length > 0 ? checkErrors : undefined,
   };
   const scored = scoreResult(data as Parameters<typeof scoreResult>[0]);
 
@@ -179,10 +218,10 @@ auditRunsRouter.post('/technical-analyzer/run', async (req: Request, res: Respon
           site = newSite;
         }
 
-        // Replace seed URLs
+        // Replace seed URLs (store type alongside URL for background audit)
         await supabase.from('seed_urls').delete().eq('site_id', site.id);
         await supabase.from('seed_urls').insert(
-          Object.values(urlMap).map(url => ({ site_id: site.id, url }))
+          Object.entries(urlMap).map(([type, url]) => ({ site_id: site.id, url, page_type: type }))
         );
 
         // Create audit run
@@ -213,7 +252,8 @@ auditRunsRouter.post('/technical-analyzer/run', async (req: Request, res: Respon
 
             for (const seed of seedUrls || []) {
               try {
-                const result = await auditSingleUrl(seed.url, seenTitles);
+                const seedPageType = (seed as Record<string, unknown>).page_type as string | undefined;
+                const result = await auditSingleUrl(seed.url, seenTitles, seedPageType);
                 await supabase.from('audit_results').insert({
                   audit_run_id: auditRun.id, url: seed.url,
                   data: (result.data ?? { error: result.error }) as Record<string, unknown>,

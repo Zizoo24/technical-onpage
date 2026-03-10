@@ -106,14 +106,21 @@ export function runStructuredDataCheck(html: string, pageType: PageType): Struct
 
   // ── Article checks ─────────────────────────────────────────────
   if (pageType === 'article') {
-    const hasArticleType = allTypes.has('NewsArticle') || allTypes.has('Article');
+    // Recognize all Article subtypes Google supports
+    const ARTICLE_TYPES = [
+      'Article', 'NewsArticle', 'ReportageNewsArticle', 'AnalysisNewsArticle',
+      'AskPublicNewsArticle', 'BackgroundNewsArticle', 'OpinionNewsArticle',
+      'ReviewNewsArticle', 'BlogPosting', 'LiveBlogPosting', 'Report',
+      'SatiricalArticle', 'ScholarlyArticle', 'TechArticle',
+    ];
+    const hasArticleType = ARTICLE_TYPES.some(t => allTypes.has(t));
     if (!hasArticleType) {
       result.status = 'FAIL';
       result.missingFields.push('NewsArticle or Article schema');
     } else {
       const articleEntity = entities.find((e) => {
         const types = getTypes(e);
-        return types.includes('NewsArticle') || types.includes('Article');
+        return types.some(t => ARTICLE_TYPES.includes(t));
       });
 
       if (articleEntity) {

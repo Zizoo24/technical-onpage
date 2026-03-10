@@ -155,7 +155,13 @@ export function scoreResult(data: CheckData): ScoringResult {
   if (data.structuredData) {
     if (pageType === 'article') {
       const types = data.structuredData.typesFound;
-      const hasArticle = types.includes('NewsArticle') || types.includes('Article');
+      const ARTICLE_SCHEMA_TYPES = [
+        'Article', 'NewsArticle', 'ReportageNewsArticle', 'AnalysisNewsArticle',
+        'AskPublicNewsArticle', 'BackgroundNewsArticle', 'OpinionNewsArticle',
+        'ReviewNewsArticle', 'BlogPosting', 'LiveBlogPosting', 'Report',
+        'SatiricalArticle', 'ScholarlyArticle', 'TechArticle',
+      ];
+      const hasArticle = types.some(t => ARTICLE_SCHEMA_TYPES.includes(t));
       if (!hasArticle) {
         escalate('FAIL');
         recs.push({

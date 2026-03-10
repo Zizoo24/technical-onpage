@@ -20,7 +20,7 @@ export interface PerformanceResult {
 }
 
 const PAGE_TIMEOUT = 15_000;
-const UA = 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 /**
  * Light timing: fetch the URL, measure wall-clock time, compute HTML size.

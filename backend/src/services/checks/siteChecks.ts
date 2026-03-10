@@ -11,7 +11,7 @@ const SITEMAP_TIMEOUT = 20_000;
 const MAX_SITEMAP_URLS = 12;
 const MAX_CHILD_SITEMAPS = 5;
 const MAX_CHILD_SIZE = 5 * 1024 * 1024; // 5 MB
-const UA = 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 const FALLBACK_SITEMAP_PATHS = [
   '/sitemap.xml',
@@ -238,8 +238,11 @@ async function checkRobots(origin: string): Promise<RobotsResult> {
   };
 
   try {
-    const res = await safeFetch(`${origin}/robots.txt`, ROBOTS_TIMEOUT);
+    const robotsUrl = `${origin}/robots.txt`;
+    console.log(`[robots] Fetching ${robotsUrl}`);
+    const res = await safeFetch(robotsUrl, ROBOTS_TIMEOUT);
     result.httpStatus = res.status;
+    console.log(`[robots] HTTP ${res.status}, content-length: ${res.text.length}, content-type: ${res.contentType}`);
 
     if (res.status === 401 || res.status === 403) {
       result.status = 'BLOCKED';
@@ -298,6 +301,7 @@ async function checkRobots(origin: string): Promise<RobotsResult> {
     flushRule();
 
     result.status = 'FOUND';
+    console.log(`[robots] Parsed: ${result.rules.length} rule(s), ${result.sitemapsFound.length} sitemap(s): ${result.sitemapsFound.join(', ') || '(none)'}`);
     if (result.sitemapsFound.length === 0) {
       result.notes.push('robots.txt exists but contains no Sitemap: directives');
     }
@@ -331,11 +335,14 @@ async function validateSitemap(
     warnings: [],
   };
 
+  console.log(`[sitemap] Validating ${url} (discovered from: ${discoveredFrom})`);
   const res = await safeFetch(url, SITEMAP_TIMEOUT);
+  console.log(`[sitemap] HTTP ${res.status}, content-type: ${res.contentType}, length: ${res.text.length}`);
 
   if (!res.ok) {
     result.status = res.status === 404 ? 'NOT_FOUND' : 'ERROR';
     result.errors.push(`HTTP ${res.status} for ${url}`);
+    console.log(`[sitemap] FAIL: ${result.status} for ${url}`);
     return result;
   }
 
@@ -343,6 +350,7 @@ async function validateSitemap(
   if (looksLikeHtml(res.text, res.contentType)) {
     result.status = 'SOFT_404';
     result.errors.push(`${url} returned HTML instead of XML (soft 404)`);
+    console.log(`[sitemap] FAIL: soft-404 (HTML response) for ${url}`);
     return result;
   }
 
@@ -464,15 +472,26 @@ async function discoverAndValidateSitemaps(
     addCandidate(u, 'robots.txt');
   }
 
-  // Fallback paths only if robots didn't provide any
-  if (robotsSitemaps.length === 0) {
-    for (const path of FALLBACK_SITEMAP_PATHS) {
-      addCandidate(`${origin}${path}`, 'fallback');
+  // Try each robots.txt candidate first
+  for (const { url, source } of candidates) {
+    const result = await validateSitemap(url, source);
+    if (result.status === 'VALID') {
+      return result;
     }
   }
 
-  // Try each candidate until we find a valid one
-  for (const { url, source } of candidates) {
+  // If robots.txt sitemaps all failed validation, try fallback paths
+  const fallbackCandidates: Array<{ url: string; source: string }> = [];
+  for (const path of FALLBACK_SITEMAP_PATHS) {
+    const fullUrl = `${origin}${path}`;
+    const key = fullUrl.toLowerCase().replace(/\/+$/, '');
+    if (!seen.has(key)) {
+      seen.add(key);
+      fallbackCandidates.push({ url: fullUrl, source: 'fallback' });
+    }
+  }
+
+  for (const { url, source } of fallbackCandidates) {
     const result = await validateSitemap(url, source);
     if (result.status === 'VALID') {
       return result;
@@ -485,7 +504,7 @@ async function discoverAndValidateSitemaps(
     discoveredFrom: 'none',
     validatedRoot: null,
     type: null,
-    errors: [`No valid sitemap found among ${candidates.length} candidate(s)`],
+    errors: [`No valid sitemap found among ${candidates.length + fallbackCandidates.length} candidate(s)`],
     warnings: [],
   };
 }

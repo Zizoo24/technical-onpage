@@ -1250,6 +1250,22 @@ export default function SEOAgent() {
             {articleResult && articleGroups.length > 0 && (
               <PageAuditSection title="Article Page Audit" url={articleResult.url} groups={articleGroups} status={articleResult.status} />
             )}
+            {articleResult && articleGroups.length === 0 && (
+              <div className="bg-white rounded-2xl shadow-lg overflow-hidden px-6 py-4">
+                <div className="flex items-center gap-3">
+                  <h3 className="text-base font-bold text-slate-900">Article Page Audit</h3>
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">FAIL</span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5 truncate font-mono">{articleResult.url}</p>
+                <div className="mt-3 p-3 bg-red-50 rounded-lg text-sm text-red-700">
+                  <strong>Could not audit this page.</strong>{' '}
+                  {articleResult.data?.error
+                    ? String(articleResult.data.error)
+                    : 'The page could not be fetched or returned no usable HTML. This may be caused by bot protection, a non-2xx HTTP status, a timeout, or JavaScript-rendered content.'}
+                  {articleResult.data?.httpStatus ? ` (HTTP ${articleResult.data.httpStatus})` : ''}
+                </div>
+              </div>
+            )}
 
             {otherGroupsList.length > 0 && otherGroupsList.map(({ row, groups }) => {
               const pt = (row.data?.pageType as string) ?? 'unknown';

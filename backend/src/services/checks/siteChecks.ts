@@ -346,18 +346,25 @@ async function validateSitemap(
     return result;
   }
 
-  // Soft-404 detection
-  if (looksLikeHtml(res.text, res.contentType)) {
-    result.status = 'SOFT_404';
-    result.errors.push(`${url} returned HTML instead of XML (soft 404)`);
-    console.log(`[sitemap] FAIL: soft-404 (HTML response) for ${url}`);
-    return result;
-  }
-
+  // Check for actual XML sitemap content FIRST — some servers serve valid
+  // sitemaps with Content-Type: text/html (misconfigured but content is valid)
   const root = xmlRoot(res.text);
-  if (!root) {
+  if (root) {
+    // Content is valid XML sitemap regardless of content-type header
+    if (looksLikeHtml(res.text, res.contentType) && !res.contentType.includes('xml')) {
+      console.log(`[sitemap] Content-Type is "${res.contentType}" but content is valid XML sitemap — accepting`);
+    }
+  } else {
+    // No valid XML root found — check if it's HTML (soft-404)
+    if (looksLikeHtml(res.text, res.contentType)) {
+      result.status = 'SOFT_404';
+      result.errors.push(`${url} returned HTML instead of XML (soft 404)`);
+      console.log(`[sitemap] FAIL: soft-404 (HTML response) for ${url}`);
+      return result;
+    }
     result.status = 'ERROR';
     result.errors.push(`${url} has no valid <urlset> or <sitemapindex> root`);
+    console.log(`[sitemap] FAIL: no valid XML root element for ${url}`);
     return result;
   }
 
@@ -470,7 +477,15 @@ async function discoverAndValidateSitemaps(
   // From robots.txt first
   for (const u of robotsSitemaps) {
     addCandidate(u, 'robots.txt');
+    // If robots.txt has http:// but origin is https://, also try the https:// version
+    // Many robots.txt files have legacy http:// sitemap URLs
+    if (u.startsWith('http://') && origin.startsWith('https://')) {
+      const httpsVariant = u.replace(/^http:\/\//, 'https://');
+      addCandidate(httpsVariant, 'robots.txt (https)');
+    }
   }
+
+  console.log(`[sitemap] ${candidates.length} candidate(s) from robots.txt: ${candidates.map(c => c.url).join(', ')}`);
 
   // Try each robots.txt candidate first
   for (const { url, source } of candidates) {

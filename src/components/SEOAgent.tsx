@@ -878,6 +878,165 @@ function ScoreCircle({ pass, warn, fail }: { pass: number; warn: number; fail: n
   );
 }
 
+/* ── Layered Score Breakdown ──────────────────────────────────── */
+
+interface LayeredScoreData {
+  technicalScore: number;
+  contentScore: number;
+  freshnessScore: number;
+  trustScore: number;
+  anomalyScore: number;
+  compositeScore: number;
+  tier: string;
+  signals: Array<{
+    id: string;
+    label: string;
+    category: string;
+    score: number;
+    weight: number;
+    explanation: string;
+    availability: string;
+    rawValue: unknown;
+  }>;
+}
+
+function ScoreBar({ label, score, color }: { label: string; score: number; color: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-xs font-medium text-slate-600 w-24 shrink-0">{label}</span>
+      <div className="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${score}%` }} />
+      </div>
+      <span className="text-xs font-bold text-slate-700 w-8 text-right">{score}</span>
+    </div>
+  );
+}
+
+function LayeredScorePanel({ results }: { results: Array<{ data: Record<string, unknown> | null; url: string }> }) {
+  const [open, setOpen] = useState(false);
+  const [expandedPage, setExpandedPage] = useState<string | null>(null);
+
+  const pagesWithScores = results.filter(r => r.data?.layeredScore);
+  if (pagesWithScores.length === 0) return null;
+
+  const tierColors: Record<string, string> = {
+    excellent: 'bg-green-100 text-green-700',
+    good: 'bg-blue-100 text-blue-700',
+    needs_work: 'bg-amber-100 text-amber-700',
+    poor: 'bg-orange-100 text-orange-700',
+    critical: 'bg-red-100 text-red-700',
+  };
+
+  const availabilityBadge: Record<string, { label: string; color: string }> = {
+    implemented: { label: 'Direct', color: 'bg-green-50 text-green-600' },
+    partially: { label: 'Partial', color: 'bg-amber-50 text-amber-600' },
+    proxy: { label: 'Proxy', color: 'bg-blue-50 text-blue-600' },
+    not_available: { label: 'N/A', color: 'bg-slate-50 text-slate-400' },
+  };
+
+  return (
+    <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-3 px-6 py-4 text-left hover:bg-slate-50 transition-colors">
+        {open ? <ChevronDown className="w-5 h-5 text-slate-400 shrink-0" /> : <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />}
+        <Zap className="w-5 h-5 text-purple-600 shrink-0" />
+        <h3 className="text-base font-semibold text-slate-900 flex-1">Quality Score Breakdown</h3>
+        <span className="text-xs text-slate-500">{pagesWithScores.length} page(s) scored</span>
+      </button>
+      {open && (
+        <div className="border-t border-slate-100 px-6 py-4 space-y-4">
+          <p className="text-xs text-slate-500">Multi-layer scoring: technical quality, content relevance, freshness, source trust, and anomaly detection. Each signal shows its data source (Direct = real data, Proxy = inferred, N/A = requires external data).</p>
+          {pagesWithScores.map(({ data, url }) => {
+            const ls = data?.layeredScore as LayeredScoreData;
+            if (!ls) return null;
+            const pageType = data?.pageType as string ?? 'unknown';
+            const isExpanded = expandedPage === url;
+            const activeSignals = ls.signals.filter(s => s.weight > 0);
+            const anomalyFlags = ls.signals.filter(s => s.category === 'anomaly' && s.weight > 0 && s.score < 0.5);
+
+            return (
+              <div key={url} className="border border-slate-200 rounded-xl overflow-hidden">
+                <button
+                  onClick={() => setExpandedPage(isExpanded ? null : url)}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-slate-50 transition-colors"
+                >
+                  {isExpanded ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-800">{pageType}</span>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${tierColors[ls.tier] ?? 'bg-slate-100 text-slate-600'}`}>
+                        {ls.tier.replace('_', ' ').toUpperCase()}
+                      </span>
+                      {anomalyFlags.length > 0 && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-50 text-red-600">
+                          {anomalyFlags.length} anomaly flag(s)
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-400 truncate font-mono mt-0.5">{url}</p>
+                  </div>
+                  <span className="text-lg font-bold text-slate-700">{ls.compositeScore}</span>
+                </button>
+
+                {isExpanded && (
+                  <div className="border-t border-slate-100 px-4 py-3 space-y-4">
+                    {/* Layer bars */}
+                    <div className="space-y-2">
+                      <ScoreBar label="Technical" score={ls.technicalScore} color="bg-blue-500" />
+                      <ScoreBar label="Content" score={ls.contentScore} color="bg-emerald-500" />
+                      <ScoreBar label="Freshness" score={ls.freshnessScore} color="bg-amber-500" />
+                      <ScoreBar label="Trust" score={ls.trustScore} color="bg-purple-500" />
+                      <ScoreBar label="Anomaly" score={ls.anomalyScore} color={ls.anomalyScore >= 70 ? 'bg-green-500' : 'bg-red-500'} />
+                    </div>
+
+                    {/* Signal details */}
+                    <div>
+                      <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2">
+                        Individual Signals ({activeSignals.length})
+                      </h4>
+                      <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                        {activeSignals
+                          .sort((a, b) => b.weight - a.weight)
+                          .map(sig => {
+                            const pct = Math.round(sig.score * 100);
+                            const sigColor = pct >= 80 ? 'text-green-600' : pct >= 50 ? 'text-amber-600' : 'text-red-600';
+                            const badge = availabilityBadge[sig.availability] ?? availabilityBadge.not_available;
+                            return (
+                              <div key={sig.id} className="flex items-start gap-2 text-[11px]">
+                                <span className={`font-bold w-8 shrink-0 text-right ${sigColor}`}>{pct}</span>
+                                <span className={`shrink-0 px-1 py-0.5 rounded text-[9px] font-medium ${badge.color}`}>{badge.label}</span>
+                                <div className="flex-1 min-w-0">
+                                  <span className="font-medium text-slate-700">{sig.label}</span>
+                                  <span className="text-slate-400 ml-1">({sig.category}, w={sig.weight.toFixed(2)})</span>
+                                  <p className="text-slate-500 mt-0.5">{sig.explanation}</p>
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </div>
+
+                    {/* Not-available signals */}
+                    {ls.signals.some(s => s.availability === 'not_available') && (
+                      <div>
+                        <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">Not Available (requires external data)</h4>
+                        <div className="flex flex-wrap gap-1">
+                          {ls.signals.filter(s => s.availability === 'not_available').map(s => (
+                            <span key={s.id} className="text-[10px] px-1.5 py-0.5 bg-slate-50 text-slate-400 rounded">{s.label}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Executive Summary ─────────────────────────────────────────── */
 
 function ExecutiveSummary({ score, allRecs, pageResults }: {
@@ -1240,6 +1399,8 @@ export default function SEOAgent() {
             </div>
 
             <ExecutiveSummary score={overallScore} allRecs={allRecs} pageResults={pageResultsSummary} />
+
+            <LayeredScorePanel results={runData.results.map(r => ({ data: r.data as Record<string, unknown> | null, url: r.url }))} />
 
             <SiteChecksSummary siteChecks={runData.siteChecks} siteRecs={runData.siteRecommendations} />
 

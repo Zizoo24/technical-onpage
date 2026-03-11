@@ -15,6 +15,8 @@ import { runContentMetaCheck } from '../services/checks/page/contentMetaCheck.js
 import { runPaginationCheck } from '../services/checks/page/paginationCheck.js';
 import { runPerformanceCheck } from '../services/checks/page/performanceCheck.js';
 import { scoreResult, scoreSiteChecks } from '../services/checks/scoring.js';
+import { computeLayeredScore } from '../services/checks/scoring/orchestrator.js';
+import type { AuditData } from '../services/checks/scoring/types.js';
 
 export const auditRunsRouter = Router();
 
@@ -157,7 +159,18 @@ async function auditSingleUrl(
   };
   const scored = scoreResult(data as Parameters<typeof scoreResult>[0]);
 
-  return { url, data, status: scored.status, recommendations: scored.recommendations };
+  // Compute layered quality scores for transparency
+  let layeredScore = null;
+  try {
+    layeredScore = computeLayeredScore(data as unknown as AuditData);
+  } catch (err) {
+    console.error(`[audit] layeredScore failed for ${url}:`, err);
+  }
+
+  return {
+    url, data: { ...data, layeredScore },
+    status: scored.status, recommendations: scored.recommendations,
+  };
 }
 
 // ── Types ───────────────────────────────────────────────────────

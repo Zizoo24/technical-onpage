@@ -41,8 +41,8 @@ function StatusBadge({ status }: { status: string | null }) {
 
 function SiteStatusBadge({ label, status }: { label: string; status: string }) {
   const color =
-    status === 'FOUND' || status === 'VALID' ? 'bg-green-100 text-green-700' :
-    status === 'NOT_FOUND' || status === 'NONE_FOUND' ? 'bg-red-100 text-red-700' :
+    status === 'FOUND' || status === 'FOUND_COMMON_PATH' ? 'bg-green-100 text-green-700' :
+    status === 'NOT_FOUND' ? 'bg-red-100 text-red-700' :
     status === 'BLOCKED' ? 'bg-orange-100 text-orange-700' :
     'bg-slate-100 text-slate-600';
   return (

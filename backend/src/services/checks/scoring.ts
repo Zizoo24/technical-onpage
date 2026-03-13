@@ -573,25 +573,43 @@ export function scoreSiteChecks(data: SiteChecksData | null): Recommendation[] {
     if (data.sitemap.status === 'NOT_FOUND') {
       recs.push({
         priority: 'P0', area: 'sitemap',
-        message: 'No valid sitemap found after testing all common paths',
+        message: 'No valid sitemap found after testing all priority paths',
         fixHint: 'Create a sitemap.xml and reference it in robots.txt with a Sitemap: directive.',
+      });
+    } else if (data.sitemap.status === 'DISCOVERED') {
+      recs.push({
+        priority: 'P1', area: 'sitemap',
+        message: 'Sitemap declared in robots.txt but could not be fetched or validated',
+        fixHint: 'Ensure the sitemap URL declared in robots.txt is accessible and returns valid XML.',
       });
     } else if (data.sitemap.status === 'BLOCKED') {
       recs.push({
         priority: 'P1', area: 'sitemap',
-        message: 'Sitemap access is blocked (HTTP 401/403)',
+        message: 'Sitemap access is blocked (HTTP 401/403, tried browser + Googlebot UA)',
         fixHint: 'Ensure sitemap URLs are publicly accessible without authentication.',
       });
-    } else if (data.sitemap.status === 'SOFT_ERROR') {
+    } else if (data.sitemap.status === 'SOFT_404') {
       recs.push({
         priority: 'P1', area: 'sitemap',
         message: 'Sitemap URL returned HTML instead of XML (soft 404)',
         fixHint: 'Ensure the sitemap URL returns valid XML with correct Content-Type.',
       });
+    } else if (data.sitemap.status === 'INVALID_XML') {
+      recs.push({
+        priority: 'P1', area: 'sitemap',
+        message: 'Sitemap response has no valid XML root element (<urlset> or <sitemapindex>)',
+        fixHint: 'Ensure the sitemap returns well-formed XML with the correct root element.',
+      });
+    } else if (data.sitemap.status === 'INVALID_FORMAT') {
+      recs.push({
+        priority: 'P1', area: 'sitemap',
+        message: 'Sitemap XML has structural violations (missing required <loc> elements)',
+        fixHint: 'Ensure every <url> has a <loc> child and every <sitemap> in a sitemapindex has a <loc> child.',
+      });
     } else if (data.sitemap.status === 'ERROR') {
       recs.push({
         priority: 'P1', area: 'sitemap',
-        message: 'Sitemap could not be validated',
+        message: 'Sitemap could not be validated (network/server error)',
         fixHint: 'Verify the sitemap URL is reachable and returns valid XML.',
       });
     }

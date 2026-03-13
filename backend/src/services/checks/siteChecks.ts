@@ -16,10 +16,15 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const FALLBACK_SITEMAP_PATHS = [
   '/sitemap.xml',
   '/sitemap_index.xml',
+  '/sitemap-index.xml',
+  '/sitemaps.xml',
+  '/sitemaps/sitemap.xml',
   '/sitemaps/sitemap_0.xml',
-  '/sitemaps/sitemap_index.xml',
-  '/news_sitemap.xml',
-  '/sitemap-news.xml',
+  '/news-sitemap.xml',
+  '/post-sitemap.xml',
+  '/page-sitemap.xml',
+  '/sitemap1.xml',
+  '/sitemap/sitemap.xml',
 ];
 
 // ── SSRF guard ──────────────────────────────────────────────────
@@ -72,8 +77,12 @@ async function safeFetch(
 
     const contentType = res.headers.get('content-type') ?? '';
 
+    // Return body even for non-200 so callers can classify 403/401/etc.
     if (!res.ok) {
-      return { ok: false, status: res.status, text: '', contentType };
+      const maxBytes = opts.maxBytes ?? 2 * 1024 * 1024;
+      let text = '';
+      try { text = await res.text(); if (text.length > maxBytes) text = text.slice(0, maxBytes); } catch { /* ignore */ }
+      return { ok: false, status: res.status, text, contentType };
     }
 
     const maxBytes = opts.maxBytes ?? 2 * 1024 * 1024;
@@ -182,7 +191,7 @@ function validateSitemapStandards(text: string): SitemapStandards {
 // ── Types ───────────────────────────────────────────────────────
 
 type RobotsStatus = 'FOUND' | 'NOT_FOUND' | 'BLOCKED' | 'ERROR';
-type SitemapStatus = 'VALID' | 'SOFT_404' | 'NOT_FOUND' | 'ERROR' | 'NONE_FOUND';
+type SitemapStatus = 'FOUND' | 'FOUND_COMMON_PATH' | 'BLOCKED' | 'NOT_FOUND' | 'SOFT_ERROR' | 'ERROR';
 
 interface RobotsRule {
   userAgent: string;
@@ -324,6 +333,7 @@ async function checkRobots(origin: string): Promise<RobotsResult> {
 async function validateSitemap(
   url: string,
   discoveredFrom: string,
+  isCommonPath = false,
 ): Promise<SitemapResult> {
   const result: SitemapResult = {
     status: 'ERROR',
@@ -337,40 +347,71 @@ async function validateSitemap(
 
   console.log(`[sitemap] Validating ${url} (discovered from: ${discoveredFrom})`);
   const res = await safeFetch(url, SITEMAP_TIMEOUT);
-  console.log(`[sitemap] HTTP ${res.status}, content-type: ${res.contentType}, length: ${res.text.length}`);
+  console.log(`[sitemap] HTTP ${res.status}, content-type: ${res.contentType}, body-length: ${res.text.length}`);
 
+  // ── Step 4: Status-code-based classification ──────────────────
   if (!res.ok) {
-    result.status = res.status === 404 ? 'NOT_FOUND' : 'ERROR';
-    result.errors.push(`HTTP ${res.status} for ${url}`);
-    console.log(`[sitemap] FAIL: ${result.status} for ${url}`);
-    return result;
+    if (res.status === 401 || res.status === 403) {
+      // Before calling it BLOCKED, check if the body is actually valid XML
+      const blockedRoot = xmlRoot(res.text);
+      if (blockedRoot) {
+        console.log(`[sitemap] HTTP ${res.status} but body contains valid XML sitemap — treating as FOUND`);
+        // Fall through to normal XML processing below
+      } else {
+        result.status = 'BLOCKED';
+        result.errors.push(`HTTP ${res.status} for ${url} — access denied`);
+        console.log(`[sitemap] BLOCKED: HTTP ${res.status} for ${url}`);
+        return result;
+      }
+    } else if (res.status === 404 || res.status === 410) {
+      result.status = 'NOT_FOUND';
+      result.errors.push(`HTTP ${res.status} for ${url}`);
+      console.log(`[sitemap] NOT_FOUND: HTTP ${res.status} for ${url}`);
+      return result;
+    } else if (res.status >= 500) {
+      result.status = 'ERROR';
+      result.errors.push(`HTTP ${res.status} for ${url} — server error`);
+      console.log(`[sitemap] ERROR: HTTP ${res.status} (server error) for ${url}`);
+      return result;
+    } else if (res.status === 0 || res.status === -1) {
+      result.status = 'ERROR';
+      result.errors.push(`Network error or timeout for ${url}`);
+      console.log(`[sitemap] ERROR: network error/timeout for ${url}`);
+      return result;
+    } else {
+      result.status = 'ERROR';
+      result.errors.push(`HTTP ${res.status} for ${url}`);
+      console.log(`[sitemap] ERROR: unexpected HTTP ${res.status} for ${url}`);
+      return result;
+    }
   }
 
-  // Check for actual XML sitemap content FIRST — some servers serve valid
+  // ── Step 4 continued: XML content-first validation ────────────
+  // Check for valid XML sitemap content FIRST — some servers serve valid
   // sitemaps with Content-Type: text/html (misconfigured but content is valid)
   const root = xmlRoot(res.text);
   if (root) {
-    // Content is valid XML sitemap regardless of content-type header
     if (looksLikeHtml(res.text, res.contentType) && !res.contentType.includes('xml')) {
       console.log(`[sitemap] Content-Type is "${res.contentType}" but content is valid XML sitemap — accepting`);
     }
   } else {
-    // No valid XML root found — check if it's HTML (soft-404)
+    // No valid XML root — check for soft error (HTML page = soft 404)
     if (looksLikeHtml(res.text, res.contentType)) {
-      result.status = 'SOFT_404';
+      result.status = 'SOFT_ERROR';
       result.errors.push(`${url} returned HTML instead of XML (soft 404)`);
-      console.log(`[sitemap] FAIL: soft-404 (HTML response) for ${url}`);
+      console.log(`[sitemap] SOFT_ERROR: HTML response for ${url}`);
       return result;
     }
     result.status = 'ERROR';
     result.errors.push(`${url} has no valid <urlset> or <sitemapindex> root`);
-    console.log(`[sitemap] FAIL: no valid XML root element for ${url}`);
+    console.log(`[sitemap] ERROR: no valid XML root element for ${url}`);
     return result;
   }
 
   result.validatedRoot = root;
   result.type = root;
-  result.status = 'VALID';
+  result.status = isCommonPath ? 'FOUND_COMMON_PATH' : 'FOUND';
+  console.log(`[sitemap] ${result.status}: valid ${root} at ${url}`);
 
   // Run standards validation on the sitemap XML
   const standards = validateSitemapStandards(res.text);
@@ -463,63 +504,140 @@ async function discoverAndValidateSitemaps(
   origin: string,
   robotsSitemaps: string[],
 ): Promise<SitemapResult> {
-  // Collect candidate URLs (limit total tested to MAX_SITEMAP_URLS)
-  const candidates: Array<{ url: string; source: string }> = [];
   const seen = new Set<string>();
+  const allResults: SitemapResult[] = [];
 
-  const addCandidate = (url: string, source: string) => {
-    const key = url.toLowerCase().replace(/\/+$/, '');
-    if (seen.has(key) || candidates.length >= MAX_SITEMAP_URLS) return;
-    seen.add(key);
-    candidates.push({ url, source });
-  };
+  const normalizeKey = (url: string) => url.toLowerCase().replace(/\/+$/, '');
+  const alreadySeen = (url: string) => seen.has(normalizeKey(url));
+  const markSeen = (url: string) => seen.add(normalizeKey(url));
 
-  // From robots.txt first
+  // ── STEP 1: robots.txt sitemap URLs ───────────────────────────
+  const robotsCandidates: Array<{ url: string; source: string }> = [];
+
   for (const u of robotsSitemaps) {
-    addCandidate(u, 'robots.txt');
-    // If robots.txt has http:// but origin is https://, also try the https:// version
-    // Many robots.txt files have legacy http:// sitemap URLs
+    if (!alreadySeen(u)) {
+      markSeen(u);
+      robotsCandidates.push({ url: u, source: 'robots.txt' });
+    }
+    // STEP 3: protocol handling — if robots.txt has http:// but origin is
+    // https://, also try the https:// variant (many robots.txt have legacy URLs)
     if (u.startsWith('http://') && origin.startsWith('https://')) {
       const httpsVariant = u.replace(/^http:\/\//, 'https://');
-      addCandidate(httpsVariant, 'robots.txt (https)');
+      if (!alreadySeen(httpsVariant)) {
+        markSeen(httpsVariant);
+        robotsCandidates.push({ url: httpsVariant, source: 'robots.txt (https upgrade)' });
+      }
+    }
+    // Also try the reverse: if robots.txt has https:// but we want to try http:// fallback
+    if (u.startsWith('https://')) {
+      const httpVariant = u.replace(/^https:\/\//, 'http://');
+      if (!alreadySeen(httpVariant)) {
+        markSeen(httpVariant);
+        robotsCandidates.push({ url: httpVariant, source: 'robots.txt (http fallback)' });
+      }
     }
   }
 
-  console.log(`[sitemap] ${candidates.length} candidate(s) from robots.txt: ${candidates.map(c => c.url).join(', ')}`);
+  console.log(`[sitemap] STEP 1: ${robotsCandidates.length} candidate(s) from robots.txt: ${robotsCandidates.map(c => c.url).join(', ') || '(none)'}`);
 
-  // Try each robots.txt candidate first
-  for (const { url, source } of candidates) {
-    const result = await validateSitemap(url, source);
-    if (result.status === 'VALID') {
+  // Try robots.txt candidates first (these get status FOUND, not FOUND_COMMON_PATH)
+  for (const { url, source } of robotsCandidates) {
+    if (robotsCandidates.length + FALLBACK_SITEMAP_PATHS.length > MAX_SITEMAP_URLS && allResults.length >= MAX_SITEMAP_URLS) break;
+    const result = await validateSitemap(url, source, false);
+    allResults.push(result);
+    if (result.status === 'FOUND') {
+      console.log(`[sitemap] SUCCESS: Found valid sitemap from robots.txt at ${url}`);
       return result;
     }
   }
 
-  // If robots.txt sitemaps all failed validation, try fallback paths
-  const fallbackCandidates: Array<{ url: string; source: string }> = [];
+  // ── STEP 2: common sitemap paths (fallback) ───────────────────
+  const commonCandidates: Array<{ url: string; source: string }> = [];
+
   for (const path of FALLBACK_SITEMAP_PATHS) {
-    const fullUrl = `${origin}${path}`;
-    const key = fullUrl.toLowerCase().replace(/\/+$/, '');
-    if (!seen.has(key)) {
-      seen.add(key);
-      fallbackCandidates.push({ url: fullUrl, source: 'fallback' });
+    // STEP 3: Try HTTPS first, then HTTP fallback
+    const httpsUrl = origin.startsWith('https://') ? `${origin}${path}` : `${origin.replace(/^http:\/\//, 'https://')}${path}`;
+    const httpUrl = origin.startsWith('http://') ? `${origin}${path}` : `${origin.replace(/^https:\/\//, 'http://')}${path}`;
+
+    if (!alreadySeen(httpsUrl)) {
+      markSeen(httpsUrl);
+      commonCandidates.push({ url: httpsUrl, source: `common path (https)` });
+    }
+    if (!alreadySeen(httpUrl)) {
+      markSeen(httpUrl);
+      commonCandidates.push({ url: httpUrl, source: `common path (http fallback)` });
     }
   }
 
-  for (const { url, source } of fallbackCandidates) {
-    const result = await validateSitemap(url, source);
-    if (result.status === 'VALID') {
+  console.log(`[sitemap] STEP 2: ${commonCandidates.length} common path candidate(s) to try`);
+
+  for (const { url, source } of commonCandidates) {
+    if (allResults.length >= MAX_SITEMAP_URLS * 2) {
+      console.log(`[sitemap] Stopping: hit candidate limit (${allResults.length} tested)`);
+      break;
+    }
+    const result = await validateSitemap(url, source, true);
+    allResults.push(result);
+    if (result.status === 'FOUND_COMMON_PATH') {
+      console.log(`[sitemap] SUCCESS: Found valid sitemap at common path ${url}`);
       return result;
     }
   }
 
-  // Nothing found
+  // ── STEP 6: Avoid false negatives ─────────────────────────────
+  // Never label as missing unless:
+  //   - robots.txt contains no sitemap AND
+  //   - ALL common paths were tested and returned 404
+  const robotsHadSitemaps = robotsSitemaps.length > 0;
+  const allWere404 = allResults.every(r => r.status === 'NOT_FOUND');
+  const hasBlockedOrError = allResults.some(r => r.status === 'BLOCKED' || r.status === 'ERROR' || r.status === 'SOFT_ERROR');
+  const totalTested = allResults.length;
+
+  console.log(`[sitemap] STEP 6: ${totalTested} URLs tested. All 404: ${allWere404}. Has blocked/error: ${hasBlockedOrError}. Robots had sitemaps: ${robotsHadSitemaps}`);
+
+  // If any were blocked or errored, report that — not NOT_FOUND
+  if (hasBlockedOrError) {
+    const blocked = allResults.find(r => r.status === 'BLOCKED');
+    if (blocked) {
+      console.log(`[sitemap] RESULT: BLOCKED — at least one URL returned 401/403`);
+      return blocked;
+    }
+    const errored = allResults.find(r => r.status === 'ERROR' || r.status === 'SOFT_ERROR');
+    if (errored) {
+      console.log(`[sitemap] RESULT: ${errored.status} — errors encountered during discovery`);
+      return errored;
+    }
+  }
+
+  // Only report NOT_FOUND if all paths returned actual 404s
+  if (allWere404 && !robotsHadSitemaps) {
+    console.log(`[sitemap] RESULT: NOT_FOUND — all ${totalTested} candidates returned 404 and robots.txt had no sitemap directives`);
+    return {
+      status: 'NOT_FOUND',
+      discoveredFrom: 'none',
+      validatedRoot: null,
+      type: null,
+      errors: [`No sitemap found: all ${totalTested} candidate URLs returned 404`],
+      warnings: [],
+    };
+  }
+
+  // Fallback: report as ERROR with diagnostic info
+  console.log(`[sitemap] RESULT: ERROR — could not validate any sitemap among ${totalTested} candidates`);
+  const errorSummary = allResults
+    .filter(r => r.errors.length > 0)
+    .map(r => `${r.url}: ${r.status} — ${r.errors[0]}`)
+    .slice(0, 5);
+
   return {
-    status: 'NONE_FOUND',
+    status: 'ERROR',
     discoveredFrom: 'none',
     validatedRoot: null,
     type: null,
-    errors: [`No valid sitemap found among ${candidates.length + fallbackCandidates.length} candidate(s)`],
+    errors: [
+      `No valid sitemap found among ${totalTested} candidate(s)`,
+      ...errorSummary,
+    ],
     warnings: [],
   };
 }
@@ -527,7 +645,7 @@ async function discoverAndValidateSitemaps(
 // ── 4. Coverage sanity (news sites) ─────────────────────────────
 
 function checkCoverage(sitemap: SitemapResult): void {
-  if (sitemap.status !== 'VALID') return;
+  if (sitemap.status !== 'FOUND' && sitemap.status !== 'FOUND_COMMON_PATH') return;
 
   // If sitemapindex, check across children
   if (sitemap.type === 'sitemapindex' && sitemap.childChecked) {

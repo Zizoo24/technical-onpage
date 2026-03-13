@@ -570,13 +570,19 @@ export function scoreSiteChecks(data: SiteChecksData | null): Recommendation[] {
   }
 
   if (data.sitemap) {
-    if (data.sitemap.status === 'NONE_FOUND') {
+    if (data.sitemap.status === 'NOT_FOUND') {
       recs.push({
         priority: 'P0', area: 'sitemap',
-        message: 'No valid sitemap found after testing common paths',
+        message: 'No valid sitemap found after testing all common paths',
         fixHint: 'Create a sitemap.xml and reference it in robots.txt with a Sitemap: directive.',
       });
-    } else if (data.sitemap.status === 'SOFT_404') {
+    } else if (data.sitemap.status === 'BLOCKED') {
+      recs.push({
+        priority: 'P1', area: 'sitemap',
+        message: 'Sitemap access is blocked (HTTP 401/403)',
+        fixHint: 'Ensure sitemap URLs are publicly accessible without authentication.',
+      });
+    } else if (data.sitemap.status === 'SOFT_ERROR') {
       recs.push({
         priority: 'P1', area: 'sitemap',
         message: 'Sitemap URL returned HTML instead of XML (soft 404)',

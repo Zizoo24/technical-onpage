@@ -144,7 +144,8 @@ function buildHomepageChecklist(row: AuditResultRow, siteChecks: Record<string, 
   }
   if (sitemap) {
     const st = String(sitemap.status);
-    crawl.push(ck('sitemap', 'Sitemap discoverable', st === 'VALID' ? 'pass' : st === 'NONE_FOUND' ? 'fail' : 'warn', st === 'VALID' ? `Sitemap found (${String(sitemap.type)})` : `Sitemap: ${st}`, 'critical'));
+    const sitemapFound = st === 'FOUND' || st === 'FOUND_COMMON_PATH';
+    crawl.push(ck('sitemap', 'Sitemap discoverable', sitemapFound ? 'pass' : st === 'NOT_FOUND' ? 'fail' : 'warn', sitemapFound ? `Sitemap found (${String(sitemap.type)})` : `Sitemap: ${st}`, 'critical'));
   }
   if (meta) {
     const rm = meta.robotsMeta as Record<string, unknown> | null;
@@ -715,7 +716,7 @@ function SiteChecksSummary({ siteChecks, siteRecs }: { siteChecks: Record<string
             </span>
           )}
           {sitemap && (
-            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${String(sitemap.status) === 'VALID' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${String(sitemap.status) === 'FOUND' || String(sitemap.status) === 'FOUND_COMMON_PATH' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
               Sitemap: {String(sitemap.status)}
             </span>
           )}
@@ -724,7 +725,7 @@ function SiteChecksSummary({ siteChecks, siteRecs }: { siteChecks: Record<string
       {open && (
         <div className="border-t border-slate-100 px-6 py-4 space-y-2">
           {/* Sitemap details */}
-          {sitemap && String(sitemap.status) === 'VALID' && (
+          {sitemap && (String(sitemap.status) === 'FOUND' || String(sitemap.status) === 'FOUND_COMMON_PATH') && (
             <div className="text-xs space-y-1 mb-3">
               <p className="text-slate-600"><span className="font-medium">Sitemap type:</span> {String(sitemap.type)}</p>
               {sitemap.url && <p className="text-slate-600 truncate"><span className="font-medium">URL:</span> <span className="font-mono">{String(sitemap.url)}</span></p>}

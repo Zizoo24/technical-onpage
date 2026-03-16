@@ -13,9 +13,29 @@ import { analyzeCanonicalConsistency } from '../lib/modules/canonical-consistenc
 import { analyzeCoreWebVitals } from '../lib/modules/core-web-vitals.js';
 import { analyzeAmp } from '../lib/modules/amp-validator.js';
 import { analyzeFreshness } from '../lib/modules/freshness-analyzer.js';
-import { smartFetch } from '../lib/scrapling-client.js';
 
 export const newsSeoRouter = Router();
+
+const FETCH_TIMEOUT = 15000;
+
+async function fetchPage(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+    });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 newsSeoRouter.post('/', async (req, res) => {
   const startTime = Date.now();
@@ -38,15 +58,16 @@ newsSeoRouter.post('/', async (req, res) => {
     let fetchError = null;
 
     try {
-      const result = await smartFetch(url, { timeout: 15, userAgent: 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)' });
-      if (result.status >= 400) {
-        fetchError = `HTTP ${result.status}`;
+      const response = await fetchPage(url);
+      if (!response.ok) {
+        fetchError = `HTTP ${response.status}`;
       } else {
-        html = result.html;
+        html = await response.text();
+        // Capture relevant headers
         httpHeaders = {
-          'last-modified': result.headers['last-modified'] || null,
-          'content-type': result.headers['content-type'] || null,
-          'x-robots-tag': result.headers['x-robots-tag'] || null,
+          'last-modified': response.headers.get('last-modified'),
+          'content-type': response.headers.get('content-type'),
+          'x-robots-tag': response.headers.get('x-robots-tag'),
         };
       }
     } catch (err) {

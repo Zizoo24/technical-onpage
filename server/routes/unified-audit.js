@@ -16,9 +16,10 @@ import { analyzeAmp } from '../lib/modules/amp-validator.js';
 import { analyzeFreshness } from '../lib/modules/freshness-analyzer.js';
 import { analyzeMigrationIntegrity } from '../lib/modules/migration-checks.js';
 import { normalizeUrl } from '../lib/url-utils.js';
-import { smartFetch } from '../lib/scrapling-client.js';
 
 export const unifiedAuditRouter = Router();
+
+const FETCH_TIMEOUT = 15000;
 
 // ── helpers ─────────────────────────────────────────────────────
 
@@ -809,20 +810,27 @@ unifiedAuditRouter.post('/', async (req, res) => {
       return res.status(400).json({ url: '', mode, status: 'error', error: 'URL is required', summary: {}, sections: [] });
     }
 
-    // 1. Fetch the page once (via Scrapling sidecar when available, native fetch fallback)
+    // 1. Fetch the page once
     let html = '', httpHeaders = {};
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
     try {
-      const result = await smartFetch(url, { timeout: 15, userAgent: 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)' });
-      if (result.status >= 400) {
-        return res.status(502).json({ url, mode, status: 'error', error: `HTTP ${result.status}`, summary: {}, sections: [], duration_ms: Date.now() - startTime });
+      const response = await fetch(url, {
+        redirect: 'follow', signal: controller.signal,
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)', Accept: 'text/html,application/xhtml+xml' },
+      });
+      clearTimeout(timer);
+      if (!response.ok) {
+        return res.status(502).json({ url, mode, status: 'error', error: `HTTP ${response.status}`, summary: {}, sections: [], duration_ms: Date.now() - startTime });
       }
-      html = result.html;
+      html = await response.text();
       httpHeaders = {
-        'last-modified': result.headers['last-modified'] || null,
-        'content-type': result.headers['content-type'] || null,
-        'x-robots-tag': result.headers['x-robots-tag'] || null,
+        'last-modified': response.headers.get('last-modified'),
+        'content-type': response.headers.get('content-type'),
+        'x-robots-tag': response.headers.get('x-robots-tag'),
       };
     } catch (err) {
+      clearTimeout(timer);
       let msg = err.message || 'Unknown fetch error';
       if (err.name === 'AbortError') msg = 'Request timed out — the target server did not respond within 15 seconds.';
       else if (err.cause?.code === 'EAI_AGAIN' || err.cause?.code === 'ENOTFOUND')

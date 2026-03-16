@@ -19,7 +19,6 @@
  */
 
 import { gunzipSync } from 'node:zlib';
-import { smartFetch } from '../scrapling-client.js';
 
 const FETCH_TIMEOUT = 10000;
 const MAX_INDEX_DEPTH = 3;
@@ -50,20 +49,21 @@ const RSS_ATOM_PATHS = ['/feed', '/rss', '/rss.xml', '/atom.xml'];
 // ── Fetch helper ────────────────────────────────────────────────
 
 async function fetchUrl(url, timeoutMs = FETCH_TIMEOUT) {
-  const timeoutSec = Math.ceil(timeoutMs / 1000);
-  const result = await smartFetch(url, {
-    timeout: timeoutSec,
-    userAgent: 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)',
-  });
-  // Return a Response-like object so callers (probe, readContent, etc.) keep working
-  return {
-    ok: result.status >= 200 && result.status < 300,
-    status: result.status,
-    url: result.url,
-    headers: { get: (k) => result.headers?.[k] ?? null },
-    text: async () => result.html || '',
-    arrayBuffer: async () => Buffer.from(result.html || '', 'utf-8'),
-  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)',
+        Accept: 'application/xml, text/xml, application/rss+xml, application/atom+xml, text/html',
+      },
+    });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ── Content helpers ─────────────────────────────────────────────

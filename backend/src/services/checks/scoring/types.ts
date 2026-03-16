@@ -79,6 +79,9 @@ export interface AuditData {
     missingFields: string[];
     presentFields: string[];
     notes: string[];
+    richResultsEligible?: string[];
+    detectedNonEligible?: string[];
+    extractionSources?: string[];
   } | null;
   contentMeta: {
     title: string | null;

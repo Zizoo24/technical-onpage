@@ -262,26 +262,45 @@ export function scoreTechnicalQuality(data: AuditData): ScoringSignal[] {
   }
 
   // ── Structured data implementation ─────────────────────────────
+  // Score based on: (1) schema presence, (2) Rich Results eligibility,
+  // (3) field completeness. Schema that exists but isn't Rich Results
+  // eligible still gets partial credit — it's NOT zero.
   if (data.structuredData) {
     const sd = data.structuredData;
     const hasSchema = sd.typesFound.length > 0;
+    const hasRichResults = (sd.richResultsEligible?.length ?? 0) > 0;
     const schemaStatus = sd.status;
     const missingCount = sd.missingFields.length;
     const presentCount = sd.presentFields.length;
     const totalFields = missingCount + presentCount;
 
     let schemaScore = 0;
+    let schemaExpl = '';
     if (!hasSchema) {
       schemaScore = 0;
-    } else if (schemaStatus === 'FAIL') {
-      schemaScore = 0.2;
-    } else if (schemaStatus === 'WARN') {
-      schemaScore = 0.6;
-    } else {
-      // PASS — but penalise slightly for missing optional fields
+      schemaExpl = 'No structured data found (checked JSON-LD, Microdata, RDFa)';
+    } else if (hasRichResults && schemaStatus === 'PASS') {
+      // Rich Results eligible + all checks pass
       schemaScore = totalFields > 0
         ? 0.7 + 0.3 * (presentCount / totalFields)
         : 0.8;
+      schemaExpl = `${sd.typesFound.join(', ')} — Rich Results eligible, ${presentCount}/${totalFields} fields present`;
+    } else if (hasRichResults && schemaStatus === 'WARN') {
+      // Rich Results eligible but with warnings
+      schemaScore = 0.6;
+      schemaExpl = `${sd.typesFound.join(', ')} — Rich Results eligible but missing some fields`;
+    } else if (hasRichResults && schemaStatus === 'FAIL') {
+      // Rich Results eligible but critical issues
+      schemaScore = 0.3;
+      schemaExpl = `${sd.typesFound.join(', ')} — Rich Results eligible but critical fields missing`;
+    } else if (hasSchema && !hasRichResults) {
+      // Schema detected but not Rich Results eligible — still gets credit
+      schemaScore = 0.5;
+      schemaExpl = `${sd.typesFound.join(', ')} detected — valid schema but not Rich Results eligible`;
+    } else {
+      // WARN with no Rich Results types
+      schemaScore = 0.4;
+      schemaExpl = `${sd.typesFound.join(', ')} — ${schemaStatus}`;
     }
 
     signals.push({
@@ -290,10 +309,15 @@ export function scoreTechnicalQuality(data: AuditData): ScoringSignal[] {
       category: 'quality',
       score: schemaScore,
       weight: 0.1,
-      rawValue: { types: sd.typesFound, missing: sd.missingFields, present: sd.presentFields },
-      explanation: !hasSchema
-        ? 'No structured data (JSON-LD) found'
-        : `${sd.typesFound.join(', ')} schema — ${presentCount}/${totalFields} fields present`,
+      rawValue: {
+        types: sd.typesFound,
+        richResultsEligible: sd.richResultsEligible ?? [],
+        detectedNonEligible: sd.detectedNonEligible ?? [],
+        missing: sd.missingFields,
+        present: sd.presentFields,
+        sources: sd.extractionSources ?? [],
+      },
+      explanation: schemaExpl,
       availability: 'implemented',
     });
   }

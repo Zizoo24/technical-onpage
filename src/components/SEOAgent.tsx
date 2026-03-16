@@ -239,14 +239,38 @@ function buildHomepageChecklist(row: AuditResultRow, siteChecks: Record<string, 
   if (schema) {
     const types = (schema.typesFound as string[]) ?? [];
     const present = (schema.presentFields as string[]) ?? [];
+    const richEligible = (schema.richResultsEligible as string[]) ?? [];
+
+    // Show all detected types first
+    if (types.length > 0) {
+      sd.push(ck('schema_detected', 'Structured data detected', 'pass', `Found: ${types.join(', ')}`, 'info'));
+    }
+
+    // WebSite schema (enables sitelinks searchbox)
     const hasWebSite = types.includes('WebSite');
-    const hasOrg = types.includes('Organization');
-    sd.push(ck('website_schema', 'WebSite schema', hasWebSite ? 'pass' : 'warn', hasWebSite ? 'WebSite schema found' : 'No WebSite schema', 'warning'));
-    sd.push(ck('org_schema', 'Organization schema', hasOrg ? 'pass' : 'info', hasOrg ? 'Organization schema found' : 'No Organization schema', 'info'));
-    if (present.includes('SearchAction (sitelinks)')) sd.push(ck('search_action', 'SearchAction (sitelinks)', 'pass', 'SearchAction present', 'info'));
+    sd.push(ck('website_schema', 'WebSite schema', hasWebSite ? 'pass' : 'info',
+      hasWebSite ? 'WebSite schema found (sitelinks searchbox eligible)' : 'No WebSite schema — optional, enables sitelinks searchbox', 'info'));
+
+    // Organization (valid structured data, not Rich Results but still SEO-relevant)
+    const hasOrg = types.includes('Organization') || types.includes('NewsMediaOrganization') || types.includes('Corporation');
     if (hasOrg) {
+      sd.push(ck('org_schema', 'Organization schema', 'pass', `Organization schema found (${types.filter(t => ['Organization', 'NewsMediaOrganization', 'Corporation'].includes(t)).join(', ')})`, 'info'));
       sd.push(ck('org_name', 'Organization name', present.includes('Organization name') ? 'pass' : 'warn', present.includes('Organization name') ? 'Name present' : 'Missing name', 'warning'));
       sd.push(ck('org_logo', 'Organization logo', present.includes('Organization logo') ? 'pass' : 'warn', present.includes('Organization logo') ? 'Logo present' : 'Missing logo', 'warning'));
+    }
+
+    if (present.includes('SearchAction (sitelinks)')) sd.push(ck('search_action', 'SearchAction (sitelinks)', 'pass', 'SearchAction present', 'info'));
+
+    // WebPage is valid schema too
+    if (types.includes('WebPage') || types.includes('CollectionPage')) {
+      sd.push(ck('webpage_schema', 'WebPage schema', 'pass', 'WebPage schema found', 'info'));
+    }
+
+    // Rich Results eligibility summary
+    if (richEligible.length > 0) {
+      sd.push(ck('rich_results', 'Rich Results eligible', 'pass', `Eligible types: ${richEligible.join(', ')}`, 'info'));
+    } else if (types.length > 0) {
+      sd.push(ck('rich_results', 'Rich Results eligibility', 'info', 'Schema detected but no Rich Results eligible types — this is not an error', 'info'));
     }
   }
   if (sd.length > 0) groups.push({ id: 'structured_data', title: 'Structured Data', icon: <Code2 className="w-4 h-4" />, checks: sd });
@@ -316,12 +340,25 @@ function buildArticleChecklist(row: AuditResultRow): CheckGroup[] {
   if (schema) {
     const types = (schema.typesFound as string[]) ?? [];
     const present = (schema.presentFields as string[]) ?? [];
-    const hasArticle = types.includes('NewsArticle') || types.includes('Article');
-    const articleType = types.includes('NewsArticle') ? 'NewsArticle' : types.includes('Article') ? 'Article' : null;
-    sd.push(ck('article_schema', 'NewsArticle / Article schema', hasArticle ? 'pass' : 'fail',
-      hasArticle ? `${articleType} schema found` : 'No article schema found', 'critical'));
+    const missing = (schema.missingFields as string[]) ?? [];
+    const ARTICLE_TYPES = ['Article', 'NewsArticle', 'ReportageNewsArticle', 'AnalysisNewsArticle',
+      'AskPublicNewsArticle', 'BackgroundNewsArticle', 'OpinionNewsArticle',
+      'ReviewNewsArticle', 'BlogPosting', 'LiveBlogPosting', 'Report',
+      'SatiricalArticle', 'ScholarlyArticle', 'TechArticle'];
+    const hasArticle = types.some(t => ARTICLE_TYPES.includes(t));
+    const articleType = types.find(t => ARTICLE_TYPES.includes(t));
 
+    // Show all detected types first (regardless of eligibility)
+    if (types.length > 0) {
+      sd.push(ck('schema_detected', 'Structured data detected', 'pass', `Found: ${types.join(', ')}`, 'info'));
+    }
+
+    // Article-specific Rich Results check
     if (hasArticle) {
+      sd.push(ck('article_schema', 'Article schema (Rich Results)', 'pass',
+        `${articleType} schema found — Rich Results eligible`, 'critical'));
+
+      // Required fields
       for (const field of ['headline', 'datePublished', 'author', 'image'] as const) {
         const has = present.includes(field);
         sd.push(ck(`schema_${field}`, `Schema: ${field}`, has ? 'pass' : 'warn', has ? `${field} present` : `Missing ${field}`, field === 'headline' || field === 'datePublished' ? 'critical' : 'warning'));
@@ -334,9 +371,15 @@ function buildArticleChecklist(row: AuditResultRow): CheckGroup[] {
         sd.push(ck('publisher_name', 'Publisher name', present.includes('publisher.name') ? 'pass' : 'warn', present.includes('publisher.name') ? 'Name present' : 'Missing publisher name', 'warning'));
         sd.push(ck('publisher_logo', 'Publisher logo', present.includes('publisher.logo') ? 'pass' : 'info', present.includes('publisher.logo') ? 'Logo present' : 'Missing publisher logo', 'info'));
       }
+    } else if (types.length > 0) {
+      // Has schema but not article-specific — this is NOT an error
+      sd.push(ck('article_schema', 'Article schema (Rich Results)', 'info',
+        `No article-specific schema — detected types (${types.join(', ')}) are valid but not Rich Results eligible for articles`, 'info'));
+    } else {
+      sd.push(ck('article_schema', 'Structured data', 'warn', 'No structured data found', 'warning'));
     }
+
     // Date format validation
-    const missing = (schema.missingFields as string[]) ?? [];
     if (present.includes('datePublished:valid_format')) sd.push(ck('date_pub_fmt', 'datePublished format', 'pass', 'Valid ISO 8601', 'info'));
     else if (missing.includes('datePublished:valid_format')) sd.push(ck('date_pub_fmt', 'datePublished format', 'warn', 'Not valid ISO 8601 — Google may ignore', 'warning'));
     if (present.includes('dateModified:valid_format')) sd.push(ck('date_mod_fmt', 'dateModified format', 'pass', 'Valid ISO 8601', 'info'));

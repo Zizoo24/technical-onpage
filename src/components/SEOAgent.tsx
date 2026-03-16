@@ -738,6 +738,79 @@ function CheckGroupCard({ group, defaultOpen }: { group: CheckGroup; defaultOpen
   );
 }
 
+/** Message panel shown when the crawler couldn't access the page (401/403/404/5xx) */
+function CrawlGatePanel({ title, url, row }: { title: string; url: string; row: AuditResultRow }) {
+  const [open, setOpen] = useState(true);
+  const pageState = (row.data?.page_state as string) ?? 'FETCH_ERROR';
+  const httpStatus = row.data?.httpStatus as number | undefined;
+  const errorMsg = row.data?.error as string | undefined;
+
+  const stateConfig: Record<string, { badge: string; badgeColor: string; icon: React.ReactNode; bg: string; border: string }> = {
+    CRAWLER_BLOCKED: { badge: 'BLOCKED', badgeColor: 'bg-orange-100 text-orange-700', icon: <Shield className="w-5 h-5 text-orange-500" />, bg: 'bg-orange-50', border: 'border-orange-200' },
+    NOT_FOUND: { badge: 'NOT FOUND', badgeColor: 'bg-red-100 text-red-700', icon: <XCircle className="w-5 h-5 text-red-500" />, bg: 'bg-red-50', border: 'border-red-200' },
+    SERVER_ERROR: { badge: 'SERVER ERROR', badgeColor: 'bg-red-100 text-red-700', icon: <AlertCircle className="w-5 h-5 text-red-500" />, bg: 'bg-red-50', border: 'border-red-200' },
+    FETCH_ERROR: { badge: 'ERROR', badgeColor: 'bg-red-100 text-red-700', icon: <AlertCircle className="w-5 h-5 text-red-500" />, bg: 'bg-red-50', border: 'border-red-200' },
+  };
+  const cfg = stateConfig[pageState] ?? stateConfig.FETCH_ERROR;
+
+  return (
+    <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-3 px-6 py-4 text-left hover:bg-slate-50 transition-colors">
+        {open ? <ChevronDown className="w-5 h-5 text-slate-400 shrink-0" /> : <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3">
+            <h3 className="text-base font-bold text-slate-900">{title}</h3>
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${cfg.badgeColor}`}>{cfg.badge}</span>
+          </div>
+          <p className="text-xs text-slate-500 mt-0.5 truncate font-mono">{url}</p>
+        </div>
+      </button>
+      {open && (
+        <div className="border-t border-slate-100 px-6 py-4">
+          <div className={`flex items-start gap-3 p-4 rounded-xl border ${cfg.bg} ${cfg.border}`}>
+            {cfg.icon}
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-slate-800">
+                {errorMsg || `Page state: ${pageState}`}
+                {httpStatus ? ` (HTTP ${httpStatus})` : ''}
+              </p>
+              <p className="text-xs text-slate-600 mt-1">
+                On-page SEO checks were skipped because the crawler could not access the page content.
+                No canonical, schema, title, content, or heading checks were performed.
+              </p>
+              {pageState === 'CRAWLER_BLOCKED' && (
+                <p className="text-xs text-slate-500 mt-2">
+                  Check if bot protection or IP-based blocking is preventing access. Ensure your server responds with HTTP 200 for legitimate crawlers.
+                </p>
+              )}
+              {pageState === 'NOT_FOUND' && (
+                <p className="text-xs text-slate-500 mt-2">
+                  Verify that the URL is correct and the page exists. A 404/410 means the content is not available at this address.
+                </p>
+              )}
+              {pageState === 'SERVER_ERROR' && (
+                <p className="text-xs text-slate-500 mt-2">
+                  The server returned an error. This is typically a temporary issue. Try again later or check server logs.
+                </p>
+              )}
+            </div>
+          </div>
+          {row.recommendations && row.recommendations.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              {row.recommendations.map((r, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs bg-amber-50 border border-amber-200 px-3 py-2 rounded-lg">
+                  <span className="font-semibold text-amber-700 shrink-0">{r.priority}</span>
+                  <span className="text-slate-700">{r.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PageAuditSection({ title, url, groups, status }: { title: string; url: string; groups: CheckGroup[]; status: string | null }) {
   const [open, setOpen] = useState(true);
 
@@ -1381,12 +1454,19 @@ export default function SEOAgent() {
     const checks = groups.flatMap(g => g.checks);
     pageResultsSummary.push({ title, url, pass: checks.filter(c => c.status === 'pass').length, warn: checks.filter(c => c.status === 'warn').length, fail: checks.filter(c => c.status === 'fail').length });
   };
-  if (homeResult && homeGroups.length > 0) addPageSummary('Homepage', homeResult.url, homeGroups);
-  if (articleResult && articleGroups.length > 0) addPageSummary('Article', articleResult.url, articleGroups);
+  if (homeResult) {
+    if (homeResult.data?.checksSkipped) pageResultsSummary.push({ title: 'Homepage', url: homeResult.url, pass: 0, warn: 0, fail: 1 });
+    else if (homeGroups.length > 0) addPageSummary('Homepage', homeResult.url, homeGroups);
+  }
+  if (articleResult) {
+    if (articleResult.data?.checksSkipped) pageResultsSummary.push({ title: 'Article', url: articleResult.url, pass: 0, warn: 0, fail: 1 });
+    else if (articleGroups.length > 0) addPageSummary('Article', articleResult.url, articleGroups);
+  }
   for (const { row, groups } of otherGroupsList) {
     const pt = (row.data?.pageType as string) ?? 'unknown';
     const labels: Record<string, string> = { section: 'Section', tag: 'Tag', search: 'Search', author: 'Author', video_article: 'Video' };
-    if (groups.length > 0) addPageSummary(labels[pt] ?? pt, row.url, groups);
+    if (row.data?.checksSkipped) pageResultsSummary.push({ title: labels[pt] ?? pt, url: row.url, pass: 0, warn: 0, fail: 1 });
+    else if (groups.length > 0) addPageSummary(labels[pt] ?? pt, row.url, groups);
   }
 
   return (
@@ -1485,34 +1565,42 @@ export default function SEOAgent() {
 
             <SiteChecksSummary siteChecks={runData.siteChecks} siteRecs={runData.siteRecommendations} />
 
-            {homeResult && homeGroups.length > 0 && (
-              <PageAuditSection title="Homepage Audit" url={homeResult.url} groups={homeGroups} status={homeResult.status} />
+            {homeResult && (
+              homeResult.data?.checksSkipped
+                ? <CrawlGatePanel title="Homepage Audit" url={homeResult.url} row={homeResult} />
+                : homeGroups.length > 0
+                  ? <PageAuditSection title="Homepage Audit" url={homeResult.url} groups={homeGroups} status={homeResult.status} />
+                  : null
             )}
 
-            {articleResult && articleGroups.length > 0 && (
-              <PageAuditSection title="Article Page Audit" url={articleResult.url} groups={articleGroups} status={articleResult.status} />
-            )}
-            {articleResult && articleGroups.length === 0 && (
-              <div className="bg-white rounded-2xl shadow-lg overflow-hidden px-6 py-4">
-                <div className="flex items-center gap-3">
-                  <h3 className="text-base font-bold text-slate-900">Article Page Audit</h3>
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">FAIL</span>
-                </div>
-                <p className="text-xs text-slate-500 mt-0.5 truncate font-mono">{articleResult.url}</p>
-                <div className="mt-3 p-3 bg-red-50 rounded-lg text-sm text-red-700">
-                  <strong>Could not audit this page.</strong>{' '}
-                  {articleResult.data?.error
-                    ? String(articleResult.data.error)
-                    : 'The page could not be fetched or returned no usable HTML. This may be caused by bot protection, a non-2xx HTTP status, a timeout, or JavaScript-rendered content.'}
-                  {articleResult.data?.httpStatus ? ` (HTTP ${articleResult.data.httpStatus})` : ''}
-                </div>
-              </div>
+            {articleResult && (
+              articleResult.data?.checksSkipped
+                ? <CrawlGatePanel title="Article Page Audit" url={articleResult.url} row={articleResult} />
+                : articleGroups.length > 0
+                  ? <PageAuditSection title="Article Page Audit" url={articleResult.url} groups={articleGroups} status={articleResult.status} />
+                  : (
+                    <div className="bg-white rounded-2xl shadow-lg overflow-hidden px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        <h3 className="text-base font-bold text-slate-900">Article Page Audit</h3>
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">FAIL</span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5 truncate font-mono">{articleResult.url}</p>
+                      <div className="mt-3 p-3 bg-red-50 rounded-lg text-sm text-red-700">
+                        <strong>Could not audit this page.</strong>{' '}
+                        {articleResult.data?.error
+                          ? String(articleResult.data.error)
+                          : 'The page could not be fetched or returned no usable HTML. This may be caused by bot protection, a non-2xx HTTP status, a timeout, or JavaScript-rendered content.'}
+                        {articleResult.data?.httpStatus ? ` (HTTP ${articleResult.data.httpStatus})` : ''}
+                      </div>
+                    </div>
+                  )
             )}
 
             {otherGroupsList.length > 0 && otherGroupsList.map(({ row, groups }) => {
               const pt = (row.data?.pageType as string) ?? 'unknown';
               const labels: Record<string, string> = { section: 'Section', tag: 'Tag / Topic', search: 'Search', author: 'Author', video_article: 'Video Article' };
               const title = `${labels[pt] ?? pt.charAt(0).toUpperCase() + pt.slice(1)} Page Audit`;
+              if (row.data?.checksSkipped) return <CrawlGatePanel key={row.id} title={title} url={row.url} row={row} />;
               return groups.length > 0 ? (
                 <PageAuditSection key={row.id} title={title} url={row.url} groups={groups} status={row.status} />
               ) : null;

@@ -22,6 +22,7 @@ export const auditRunsRouter = Router();
 
 const PAGE_TIMEOUT = 25_000;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const VALID_TYPES = ['home', 'section', 'article', 'search', 'tag', 'author', 'video_article'] as const;
 
 // ── SSRF guard ──────────────────────────────────────────────────
 
@@ -39,6 +40,26 @@ function isSafeUrl(raw: string): boolean {
   } catch { return false; }
 }
 
+// ── Page state classification ────────────────────────────────────
+
+type PageState = 'OK' | 'CRAWLER_BLOCKED' | 'NOT_FOUND' | 'SERVER_ERROR' | 'FETCH_ERROR';
+
+function classifyPageState(httpStatus: number, fetchOk: boolean): PageState {
+  if (httpStatus >= 200 && httpStatus < 300 && fetchOk) return 'OK';
+  if (httpStatus === 401 || httpStatus === 403) return 'CRAWLER_BLOCKED';
+  if (httpStatus === 404 || httpStatus === 410) return 'NOT_FOUND';
+  if (httpStatus >= 500) return 'SERVER_ERROR';
+  return 'FETCH_ERROR';
+}
+
+const PAGE_STATE_MESSAGES: Record<PageState, string> = {
+  OK: 'Page accessible',
+  CRAWLER_BLOCKED: 'Crawler access blocked. On-page SEO checks skipped.',
+  NOT_FOUND: 'Page not found. On-page SEO checks skipped.',
+  SERVER_ERROR: 'Server error. On-page SEO checks skipped.',
+  FETCH_ERROR: 'Page could not be fetched. On-page SEO checks skipped.',
+};
+
 // ── Shared: run all page checks for one URL ─────────────────────
 
 async function auditSingleUrl(
@@ -47,7 +68,8 @@ async function auditSingleUrl(
   seedType?: string,
 ): Promise<Record<string, unknown>> {
   if (!isSafeUrl(url)) {
-    return { url, error: 'Blocked by SSRF guard', status: 'FAIL', recommendations: ['URL blocked by security policy'] };
+    return { url, error: 'Blocked by SSRF guard', status: 'FAIL', page_state: 'FETCH_ERROR',
+      recommendations: ['URL blocked by security policy'] };
   }
 
   const controller = new AbortController();
@@ -78,32 +100,78 @@ async function auditSingleUrl(
         html = await hopRes.text();
         fetchOk = true;
         xRobotsTag = hopRes.headers.get('x-robots-tag') ?? '';
-      } else if (httpStatus === 403 || httpStatus === 451 || httpStatus === 200) {
-        // Try to extract HTML from soft-paywall / bot-challenged pages
-        const body = await hopRes.text();
-        if (body.length > 500 && /<html/i.test(body)) {
-          html = body;
-          fetchOk = true;
-          xRobotsTag = hopRes.headers.get('x-robots-tag') ?? '';
-        }
+      } else {
+        // Read the body for diagnostics but do NOT treat error pages as real content
+        try {
+          const body = await hopRes.text();
+          html = body;  // Store for diagnostic reference only
+        } catch { /* body read fail ok */ }
+        xRobotsTag = hopRes.headers.get('x-robots-tag') ?? '';
       }
       break;
     }
   } finally { loadMs = Date.now() - fetchStart; clearTimeout(timer); }
 
-  if (!fetchOk || !html) {
+  // ════════════════════════════════════════════════════════════════
+  // CRAWL VALIDATION GATE
+  // Only run page-level SEO checks when we have a genuine 200 response.
+  // Non-200 responses produce a structured result WITHOUT running checks,
+  // preventing false SEO issues from error pages.
+  // ════════════════════════════════════════════════════════════════
+
+  const pageState = classifyPageState(httpStatus, fetchOk);
+
+  if (pageState !== 'OK') {
+    const finalUrl = redirectChain.length > 0 ? currentUrl : url;
+    const urlOnlyType = detectPageType(finalUrl);
+    const pageType = (seedType && (VALID_TYPES as readonly string[]).includes(seedType))
+      ? (seedType as typeof VALID_TYPES[number])
+      : urlOnlyType;
+
+    console.log(`[audit] Crawl gate: ${pageState} (HTTP ${httpStatus}) for ${url} — skipping SEO checks`);
+
+    const data: Record<string, unknown> = {
+      pageType,
+      httpStatus,
+      page_state: pageState,
+      page_state_message: PAGE_STATE_MESSAGES[pageState],
+      redirectChain: redirectChain.length > 0 ? redirectChain : null,
+      redirectCount: redirectChain.length,
+      finalUrl: finalUrl !== url ? finalUrl : undefined,
+      detection: {
+        urlOnly: urlOnlyType,
+        withHtml: pageType,
+        seedType: seedType ?? null,
+        override: false,
+      },
+      // All check results are null — checks were skipped
+      canonical: null,
+      structuredData: null,
+      contentMeta: null,
+      pagination: null,
+      performance: null,
+      checksSkipped: true,
+      checksSkippedReason: `${PAGE_STATE_MESSAGES[pageState]} (HTTP ${httpStatus})`,
+    };
+
     return {
-      url, error: `Fetch failed (HTTP ${httpStatus})`, status: 'FAIL',
-      recommendations: [`Page could not be fetched — HTTP status ${httpStatus}`],
-      data: { httpStatus, redirectChain: redirectChain.length > 0 ? redirectChain : null },
+      url,
+      data,
+      page_state: pageState,
+      status: pageState === 'CRAWLER_BLOCKED' ? 'WARN' : 'FAIL',
+      error: `${PAGE_STATE_MESSAGES[pageState]} (HTTP ${httpStatus})`,
+      recommendations: [PAGE_STATE_MESSAGES[pageState]],
     };
   }
+
+  // ════════════════════════════════════════════════════════════════
+  // Page state is OK — proceed with full SEO audit
+  // ════════════════════════════════════════════════════════════════
 
   // Use the final URL after redirects for detection and canonical checks
   const finalUrl = redirectChain.length > 0 ? currentUrl : url;
 
   // Prefer the explicit seed type if it's a known PageType, otherwise auto-detect
-  const VALID_TYPES = ['home', 'section', 'article', 'search', 'tag', 'author', 'video_article'] as const;
   const urlOnlyType = detectPageType(finalUrl);
   const pageType = (seedType && (VALID_TYPES as readonly string[]).includes(seedType))
     ? (seedType as typeof VALID_TYPES[number])
@@ -141,6 +209,7 @@ async function auditSingleUrl(
   const data: Record<string, unknown> = {
     pageType,
     httpStatus,
+    page_state: 'OK' as PageState,
     redirectChain: redirectChain.length > 0 ? redirectChain : null,
     redirectCount: redirectChain.length,
     finalUrl: finalUrl !== url ? finalUrl : undefined,

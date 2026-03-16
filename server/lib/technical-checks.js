@@ -198,11 +198,13 @@ export function calculateOrphanRisk(internalLinkCount, pageDepth) {
 
 // ── Remote checks (require network) ────────────────────────────
 
+import { smartFetch } from './scrapling-client.js';
+
 export async function fetchRobotsTxt(baseUrl) {
   try {
     const u = new URL(baseUrl);
-    const res = await fetch(`${u.protocol}//${u.host}/robots.txt`);
-    if (res.ok) return { valid: true, content: (await res.text()).substring(0, 500) };
+    const result = await smartFetch(`${u.protocol}//${u.host}/robots.txt`, { timeout: 15 });
+    if (result.status >= 200 && result.status < 400) return { valid: true, content: (result.html || '').substring(0, 500) };
   } catch { /* ignore */ }
   return { valid: false, content: null };
 }
@@ -211,8 +213,9 @@ export async function checkSitemapXml(baseUrl) {
   try {
     const u = new URL(baseUrl);
     const url = `${u.protocol}//${u.host}/sitemap.xml`;
-    const res = await fetch(url);
-    return { valid: res.ok, location: res.ok ? url : null };
+    const result = await smartFetch(url, { timeout: 15 });
+    const ok = result.status >= 200 && result.status < 400;
+    return { valid: ok, location: ok ? url : null };
   } catch { /* ignore */ }
   return { valid: false, location: null };
 }

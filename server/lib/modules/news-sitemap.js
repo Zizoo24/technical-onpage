@@ -11,6 +11,8 @@
  * sitemap-discovery.js to avoid duplicate fetching.
  */
 
+import { smartFetch } from '../scrapling-client.js';
+
 const NEWS_FRESHNESS_HOURS = 48;
 const MAX_NEWS_URLS = 1000;
 const MAX_SITEMAPS_TO_PARSE = 20;
@@ -24,17 +26,17 @@ const SITEMAP_PATHS = [
 ];
 
 async function fetchWithTimeout(url, timeoutMs = FETCH_TIMEOUT) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)' },
-    });
-    return res;
-  } finally {
-    clearTimeout(timer);
-  }
+  const timeoutSec = Math.ceil(timeoutMs / 1000);
+  const result = await smartFetch(url, {
+    timeout: timeoutSec,
+    userAgent: 'Mozilla/5.0 (compatible; SEO-Analyzer/1.0)',
+  });
+  // Return a Response-like object for compatibility
+  return {
+    ok: result.status >= 200 && result.status < 300,
+    status: result.status,
+    text: async () => result.html || '',
+  };
 }
 
 function parseHoursAgo(dateStr) {

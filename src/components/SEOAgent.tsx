@@ -1,8 +1,9 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useMemo } from 'react';
 import {
   Search, AlertCircle, CheckCircle, Loader2, ChevronDown, ChevronRight,
   AlertTriangle, XCircle, Shield, Map, Copy, Check, Plus,
   Globe, FileSearch, Code2, FileText, Link, Zap, Newspaper, Download,
+  Filter, Info, Clipboard, FileDown,
 } from 'lucide-react';
 
 /* ── Types ─────────────────────────────────────────────────────── */
@@ -31,6 +32,10 @@ interface AuditRunData {
   results: AuditResultRow[];
 }
 
+/* ── Filter types ──────────────────────────────────────────────── */
+
+type FilterMode = 'all' | 'critical' | 'issues' | 'passed';
+
 /* ── Checklist builder ─────────────────────────────────────────── */
 
 interface CheckItem {
@@ -39,6 +44,9 @@ interface CheckItem {
   status: 'pass' | 'warn' | 'fail' | 'info';
   detail: string;
   severity: 'critical' | 'warning' | 'info';
+  whyItMatters?: string;
+  fix?: string;
+  category?: string;
 }
 
 interface CheckGroup {
@@ -48,8 +56,61 @@ interface CheckGroup {
   checks: CheckItem[];
 }
 
+/* ── SEO Knowledge Map — auto-populates why/fix for common checks */
+
+const SEO_KNOWLEDGE: Record<string, { why: string; fix: string; cat: string }> = {
+  robots_txt: { why: 'robots.txt controls how search engines crawl your site. Without it, crawlers may miss important content or waste budget on irrelevant pages.', fix: 'Create a robots.txt file at your site root with proper Allow/Disallow rules and Sitemap directives.', cat: 'Technical SEO' },
+  sitemap: { why: 'Sitemaps help search engines discover and index your pages faster, especially new or deep content.', fix: 'Generate an XML sitemap and submit it via Google Search Console. Add a Sitemap directive to robots.txt.', cat: 'Technical SEO' },
+  indexable: { why: 'If a page is not indexable, it will never appear in search results regardless of its content quality.', fix: 'Remove any noindex directives from meta robots tags and HTTP headers unless the page should be excluded from search.', cat: 'Technical SEO' },
+  nofollow: { why: 'A nofollow directive prevents search engines from following links on this page, limiting link equity distribution.', fix: 'Remove the nofollow directive unless you intentionally want to prevent search engines from following outbound links.', cat: 'Technical SEO' },
+  x_robots_noindex: { why: 'X-Robots-Tag noindex in HTTP headers overrides any meta tags and blocks the page from search results.', fix: 'Remove the X-Robots-Tag: noindex header from your server configuration.', cat: 'Technical SEO' },
+  x_robots_ok: { why: 'Clean X-Robots-Tag headers ensure search engines can properly index and follow the page.', fix: 'No action needed — HTTP headers are correctly configured.', cat: 'Technical SEO' },
+  redirects: { why: 'Redirect chains add latency and may cause search engines to drop some link equity at each hop.', fix: 'Update redirects to point directly to the final destination URL. Aim for a maximum of 1 redirect.', cat: 'Technical SEO' },
+  charset: { why: 'Declaring a character encoding prevents rendering issues and garbled text in search results.', fix: 'Add <meta charset="UTF-8"> in the <head> section of your HTML.', cat: 'Technical SEO' },
+  lang: { why: 'The lang attribute helps search engines understand the page language for proper geo-targeting and translation.', fix: 'Add a lang attribute to the <html> tag, e.g., <html lang="en">.', cat: 'Technical SEO' },
+  canonical_exists: { why: 'The canonical tag tells search engines which URL is the preferred version, preventing duplicate content issues.', fix: 'Add a <link rel="canonical" href="..."> tag pointing to the preferred URL.', cat: 'Technical SEO' },
+  canonical_match: { why: 'A mismatched canonical signals to search engines that this page is a duplicate, which may hurt rankings.', fix: 'Ensure the canonical URL matches the current page URL, or intentionally point it to the master version.', cat: 'Technical SEO' },
+  canonical_clean: { why: 'Query parameters in canonicals can create duplicate signals and fragment ranking signals across URL variations.', fix: 'Remove unnecessary query parameters from the canonical URL.', cat: 'Technical SEO' },
+  title: { why: 'The title tag is the most important on-page SEO element. It appears in search results and browser tabs.', fix: 'Add a unique, descriptive title tag between 30-60 characters that includes your target keyword.', cat: 'Metadata' },
+  description: { why: 'Meta descriptions appear as snippets in search results. A compelling description improves click-through rates.', fix: 'Write a unique meta description of 140-160 characters that summarizes the page content and includes a call to action.', cat: 'Metadata' },
+  h1: { why: 'The H1 tag signals the main topic of the page to search engines and users.', fix: 'Add exactly one H1 tag per page with a clear, descriptive heading that includes your primary keyword.', cat: 'Content' },
+  dup_title: { why: 'Duplicate titles confuse search engines about which page to rank and dilute ranking potential.', fix: 'Ensure every page has a unique title tag that accurately describes its specific content.', cat: 'Metadata' },
+  schema_detected: { why: 'Structured data helps search engines understand your content and can enable rich results in SERPs.', fix: 'No action needed — structured data is properly implemented.', cat: 'Structured Data' },
+  website_schema: { why: 'WebSite schema enables the sitelinks searchbox in Google results, improving site visibility.', fix: 'Add WebSite schema with a SearchAction to enable the sitelinks search box.', cat: 'Structured Data' },
+  org_schema: { why: 'Organization schema provides knowledge panel information and establishes brand identity in search.', fix: 'Add Organization schema with name, logo, url, and social profiles.', cat: 'Structured Data' },
+  org_name: { why: 'The organization name in schema helps Google populate knowledge panels and brand recognition.', fix: 'Add the "name" property to your Organization schema markup.', cat: 'Structured Data' },
+  org_logo: { why: 'A logo in Organization schema appears in Google knowledge panels, increasing brand trust.', fix: 'Add the "logo" property with a URL to your organization\'s logo (min 112x112px).', cat: 'Structured Data' },
+  article_schema: { why: 'Article schema enables rich results including top stories carousel, increasing click-through rates.', fix: 'Add NewsArticle or Article schema with required properties: headline, datePublished, author, image.', cat: 'Structured Data' },
+  article_headline: { why: 'The headline in article schema appears directly in Google search rich results.', fix: 'Add the "headline" property to your article schema (max 110 characters).', cat: 'Structured Data' },
+  article_datePublished: { why: 'datePublished signals content freshness, critical for news content in Google\'s ranking algorithms.', fix: 'Add datePublished in ISO 8601 format (e.g., 2024-01-15T10:30:00Z).', cat: 'Structured Data' },
+  article_author: { why: 'Author attribution supports E-E-A-T signals. Google uses this for author knowledge panels.', fix: 'Add an author property with @type Person and a name field.', cat: 'Structured Data' },
+  article_image: { why: 'Images in article schema enable visual rich results and top stories thumbnails.', fix: 'Add an image property with a URL to a high-quality image (min 1200px wide).', cat: 'Structured Data' },
+  word_count: { why: 'Content length correlates with topic depth. Thin content may not satisfy search intent.', fix: 'Ensure articles have sufficient depth — aim for at least 300 words for news articles.', cat: 'Content' },
+  og_title: { why: 'Open Graph title controls how the page appears when shared on Facebook, LinkedIn, and other platforms.', fix: 'Add <meta property="og:title" content="..."> with a compelling title.', cat: 'Metadata' },
+  og_image: { why: 'OG images dramatically increase engagement when content is shared on social media.', fix: 'Add <meta property="og:image" content="..."> with a 1200x630px image URL.', cat: 'Metadata' },
+  twitter_card: { why: 'Twitter card tags control the preview appearance in tweets, improving social click-through rates.', fix: 'Add <meta name="twitter:card" content="summary_large_image"> for rich Twitter previews.', cat: 'Metadata' },
+  ttfb: { why: 'Time to First Byte measures server responsiveness. Slow TTFB delays everything else.', fix: 'Optimize server-side processing, use caching, and consider a CDN. Target < 800ms.', cat: 'Performance' },
+  load_time: { why: 'Page load time directly impacts user experience and is a confirmed Google ranking factor.', fix: 'Optimize images, minify CSS/JS, enable compression, and use lazy loading. Target < 3 seconds.', cat: 'Performance' },
+  html_size: { why: 'Large HTML files increase load time and may indicate bloated inline styles or scripts.', fix: 'Minimize inline CSS/JS, remove unused code, and ensure server-side rendering is efficient. Target < 200KB.', cat: 'Performance' },
+  psi_score: { why: 'PageSpeed Insights score is based on Core Web Vitals, which are direct Google ranking signals.', fix: 'Address all "Opportunities" and "Diagnostics" in the PageSpeed Insights report.', cat: 'Performance' },
+  lcp: { why: 'Largest Contentful Paint measures perceived load speed. It is a Core Web Vital and ranking signal.', fix: 'Optimize the largest content element (hero image/text). Preload critical resources. Target <= 2.5s.', cat: 'Performance' },
+  cls: { why: 'Cumulative Layout Shift measures visual stability. High CLS frustrates users and hurts rankings.', fix: 'Set explicit dimensions on images/videos, avoid inserting content above existing content. Target <= 0.1.', cat: 'Performance' },
+  inp: { why: 'Interaction to Next Paint measures responsiveness. Poor INP means sluggish feeling interactions.', fix: 'Minimize long tasks, break up JavaScript execution, use web workers for heavy computation. Target <= 200ms.', cat: 'Performance' },
+  viewport: { why: 'Without a viewport meta tag, mobile users see a desktop-sized page which harms mobile rankings.', fix: 'Add <meta name="viewport" content="width=device-width, initial-scale=1"> to the <head>.', cat: 'Technical SEO' },
+  person_schema: { why: 'Person schema enables author knowledge panels and supports E-E-A-T signals.', fix: 'Add Person schema with name, url, image, jobTitle, and sameAs properties.', cat: 'Structured Data' },
+  video_schema: { why: 'VideoObject schema enables video rich results, increasing visibility in video search.', fix: 'Add VideoObject schema with name, description, thumbnailUrl, uploadDate, and duration.', cat: 'Structured Data' },
+  pagination_canonical: { why: 'Paginated pages with improper canonical tags can cause indexing issues or content consolidation problems.', fix: 'Ensure paginated pages have self-referencing canonicals, not all pointing to page 1.', cat: 'Technical SEO' },
+  hreflang_count: { why: 'Hreflang tags help search engines serve the right language version to users in different regions.', fix: 'No action needed — hreflang tags are properly implemented.', cat: 'Technical SEO' },
+  hreflang_default: { why: 'The x-default hreflang tag provides a fallback URL for users whose language is not specifically targeted.', fix: 'Add <link rel="alternate" hreflang="x-default" href="..."> pointing to your default language page.', cat: 'Technical SEO' },
+  article_published_time: { why: 'The article:published_time OG tag signals freshness to social platforms and some search features.', fix: 'Add <meta property="article:published_time" content="..."> with an ISO 8601 date.', cat: 'Metadata' },
+  byline: { why: 'A visible author byline supports content credibility and E-E-A-T signals.', fix: 'Add a visible author name on the article page.', cat: 'Content' },
+  main_image: { why: 'A main image improves engagement, enables image search visibility, and is needed for rich results.', fix: 'Include a high-quality main image above the fold in every article.', cat: 'Content' },
+  amp_link: { why: 'AMP pages load faster on mobile and can appear in the Google Top Stories carousel.', fix: 'Implement AMP for news articles or ensure regular pages meet Core Web Vitals thresholds.', cat: 'Technical SEO' },
+};
+
 function ck(id: string, label: string, status: 'pass' | 'warn' | 'fail' | 'info', detail: string, severity: 'critical' | 'warning' | 'info' = 'warning'): CheckItem {
-  return { id, label, status, detail, severity };
+  const knowledge = SEO_KNOWLEDGE[id];
+  return { id, label, status, detail, severity, whyItMatters: knowledge?.why, fix: knowledge?.fix, category: knowledge?.cat };
 }
 
 /** Shared: build performance check items including TTFB and PSI when available */
@@ -608,7 +669,7 @@ function buildVideoChecklist(row: AuditResultRow): CheckGroup[] {
   return groups;
 }
 
-function buildSectionChecklist(row: AuditResultRow, siteChecks: Record<string, unknown> | null, pageLabel: string): CheckGroup[] {
+function buildSectionChecklist(row: AuditResultRow, _siteChecks: Record<string, unknown> | null, pageLabel: string): CheckGroup[] {
   const data = row.data;
   if (!data) return [];
   const canonical = data.canonical as Record<string, unknown> | null;
@@ -687,50 +748,118 @@ function CheckStatusIcon({ status }: { status: 'pass' | 'warn' | 'fail' | 'info'
   if (status === 'pass') return <CheckCircle className="w-4 h-4 text-green-600 shrink-0" />;
   if (status === 'warn') return <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />;
   if (status === 'fail') return <XCircle className="w-4 h-4 text-red-600 shrink-0" />;
-  return <div className="w-4 h-4 rounded-full border-2 border-slate-300 shrink-0" />;
+  return <Info className="w-4 h-4 text-blue-400 shrink-0" />;
 }
 
-function SeverityBadge({ severity }: { severity: 'critical' | 'warning' | 'info' }) {
-  if (severity === 'critical') return <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-100 text-red-700">Critical</span>;
-  if (severity === 'warning') return <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">Warning</span>;
-  return <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Info</span>;
+function SeverityBadge({ severity, status }: { severity: 'critical' | 'warning' | 'info'; status?: string }) {
+  if (status === 'fail' && severity === 'critical') return <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-700 uppercase tracking-wide">Critical</span>;
+  if (status === 'fail') return <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-600 uppercase tracking-wide">Fail</span>;
+  if (status === 'warn') return <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 uppercase tracking-wide">Warning</span>;
+  if (severity === 'critical') return <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-100 text-red-700 uppercase tracking-wide">Critical</span>;
+  if (severity === 'warning') return <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 uppercase tracking-wide">Warning</span>;
+  return <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-600 uppercase tracking-wide">Notice</span>;
 }
 
 function GroupScorePill({ checks }: { checks: CheckItem[] }) {
   const pass = checks.filter(c => c.status === 'pass').length;
-  const total = checks.filter(c => c.status !== 'info').length;
+  const warn = checks.filter(c => c.status === 'warn').length;
+  const fail = checks.filter(c => c.status === 'fail').length;
+  const total = pass + warn + fail;
   if (total === 0) return null;
   const pct = Math.round((pass / total) * 100);
   const color = pct >= 80 ? 'bg-green-100 text-green-700' : pct >= 50 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700';
-  return <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${color}`}>{pass}/{total}</span>;
+  return (
+    <div className="flex items-center gap-2">
+      {fail > 0 && <span className="text-[10px] font-bold text-red-600">{fail} fail</span>}
+      {warn > 0 && <span className="text-[10px] font-bold text-amber-600">{warn} warn</span>}
+      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${color}`}>{pass}/{total}</span>
+    </div>
+  );
 }
 
-function CheckGroupCard({ group, defaultOpen }: { group: CheckGroup; defaultOpen: boolean }) {
+function CheckItemCard({ check }: { check: CheckItem }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasExtra = check.whyItMatters || check.fix;
+  const isIssue = check.status === 'fail' || check.status === 'warn';
+
+  const bgColor = check.status === 'fail' ? 'bg-red-50/60 hover:bg-red-50' : check.status === 'warn' ? 'bg-orange-50/40 hover:bg-orange-50/60' : check.status === 'pass' ? 'hover:bg-green-50/30' : 'hover:bg-slate-50';
+  const borderColor = check.status === 'fail' ? 'border-l-red-500' : check.status === 'warn' ? 'border-l-orange-400' : check.status === 'pass' ? 'border-l-green-500' : 'border-l-blue-300';
+
+  return (
+    <div className={`border-l-[3px] ${borderColor} ${bgColor} transition-colors`}>
+      <button
+        onClick={() => hasExtra && setExpanded(!expanded)}
+        className={`w-full flex items-start gap-3 px-4 py-3 text-left ${hasExtra ? 'cursor-pointer' : 'cursor-default'}`}
+      >
+        <CheckStatusIcon status={check.status} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[13px] font-semibold text-slate-800">{check.label}</span>
+            {isIssue && <SeverityBadge severity={check.severity} status={check.status} />}
+            {check.category && <span className="text-[9px] font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 uppercase tracking-wider">{check.category}</span>}
+          </div>
+          <p className="text-xs text-slate-500 mt-0.5">{check.detail}</p>
+        </div>
+        {hasExtra && (
+          <ChevronDown className={`w-4 h-4 text-slate-400 shrink-0 mt-0.5 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        )}
+      </button>
+      {expanded && hasExtra && (
+        <div className="px-4 pb-3 pl-11 space-y-2">
+          {check.whyItMatters && (
+            <div className="flex items-start gap-2 text-xs bg-white/80 rounded-lg p-2.5 border border-slate-100">
+              <Info className="w-3.5 h-3.5 text-blue-500 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold text-slate-700">Why it matters: </span>
+                <span className="text-slate-600">{check.whyItMatters}</span>
+              </div>
+            </div>
+          )}
+          {check.fix && isIssue && (
+            <div className="flex items-start gap-2 text-xs bg-white/80 rounded-lg p-2.5 border border-green-100">
+              <CheckCircle className="w-3.5 h-3.5 text-green-500 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold text-green-700">Recommended fix: </span>
+                <span className="text-slate-600">{check.fix}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CheckGroupCard({ group, defaultOpen, filter }: { group: CheckGroup; defaultOpen: boolean; filter?: FilterMode }) {
   const [open, setOpen] = useState(defaultOpen);
   const hasFail = group.checks.some(c => c.status === 'fail');
   const hasWarn = group.checks.some(c => c.status === 'warn');
 
+  const filteredChecks = useMemo(() => {
+    if (!filter || filter === 'all') return group.checks;
+    if (filter === 'critical') return group.checks.filter(c => c.status === 'fail' && c.severity === 'critical');
+    if (filter === 'issues') return group.checks.filter(c => c.status === 'fail' || c.status === 'warn');
+    if (filter === 'passed') return group.checks.filter(c => c.status === 'pass');
+    return group.checks;
+  }, [group.checks, filter]);
+
+  if (filteredChecks.length === 0) return null;
+
+  const headerBg = hasFail ? 'bg-red-50/40' : hasWarn ? 'bg-orange-50/30' : 'bg-slate-50/50';
+  const borderTop = hasFail ? 'border-t-2 border-t-red-400' : hasWarn ? 'border-t-2 border-t-orange-400' : 'border-t-2 border-t-green-400';
+
   return (
-    <div className={`border rounded-xl overflow-hidden ${hasFail ? 'border-red-200' : hasWarn ? 'border-amber-200' : 'border-slate-200'}`}>
-      <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-slate-50 transition-colors">
+    <div className={`border border-slate-200 rounded-xl overflow-hidden shadow-sm ${borderTop}`}>
+      <button onClick={() => setOpen(!open)} className={`w-full flex items-center gap-3 px-4 py-3.5 text-left hover:bg-slate-50/80 transition-colors ${headerBg}`}>
         {open ? <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />}
         <span className="text-blue-600">{group.icon}</span>
-        <span className="text-sm font-semibold text-slate-800 flex-1">{group.title}</span>
+        <span className="text-sm font-bold text-slate-800 flex-1">{group.title}</span>
         <GroupScorePill checks={group.checks} />
       </button>
       {open && (
-        <div className="border-t border-slate-100">
-          {group.checks.map((check, i) => (
-            <div key={check.id + i} className={`flex items-start gap-3 px-4 py-2.5 text-xs ${i > 0 ? 'border-t border-slate-50' : ''} ${check.status === 'fail' ? 'bg-red-50/50' : check.status === 'warn' ? 'bg-amber-50/30' : ''}`}>
-              <CheckStatusIcon status={check.status} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-slate-800">{check.label}</span>
-                  {check.status === 'fail' && check.severity === 'critical' && <SeverityBadge severity="critical" />}
-                </div>
-                <p className="text-slate-500 mt-0.5 truncate">{check.detail}</p>
-              </div>
-            </div>
+        <div className="divide-y divide-slate-100">
+          {filteredChecks.map((check, i) => (
+            <CheckItemCard key={check.id + i} check={check} />
           ))}
         </div>
       )}
@@ -811,12 +940,43 @@ function CrawlGatePanel({ title, url, row }: { title: string; url: string; row: 
   );
 }
 
+function QuickFilters({ filter, setFilter, counts }: { filter: FilterMode; setFilter: (f: FilterMode) => void; counts: { all: number; critical: number; issues: number; passed: number } }) {
+  const buttons: { mode: FilterMode; label: string; count: number; color: string; activeColor: string }[] = [
+    { mode: 'all', label: 'All', count: counts.all, color: 'text-slate-600 bg-slate-100 hover:bg-slate-200', activeColor: 'text-white bg-slate-700' },
+    { mode: 'critical', label: 'Critical', count: counts.critical, color: 'text-red-600 bg-red-50 hover:bg-red-100', activeColor: 'text-white bg-red-600' },
+    { mode: 'issues', label: 'Issues', count: counts.issues, color: 'text-orange-600 bg-orange-50 hover:bg-orange-100', activeColor: 'text-white bg-orange-500' },
+    { mode: 'passed', label: 'Passed', count: counts.passed, color: 'text-green-600 bg-green-50 hover:bg-green-100', activeColor: 'text-white bg-green-600' },
+  ];
+  return (
+    <div className="flex items-center gap-2">
+      <Filter className="w-3.5 h-3.5 text-slate-400" />
+      {buttons.map(b => (
+        <button key={b.mode} onClick={() => setFilter(b.mode)}
+          className={`text-[11px] font-semibold px-2.5 py-1 rounded-full transition-colors ${filter === b.mode ? b.activeColor : b.color}`}>
+          {b.label} {b.count > 0 && <span className="ml-0.5 opacity-75">({b.count})</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function PageAuditSection({ title, url, groups, status }: { title: string; url: string; groups: CheckGroup[]; status: string | null }) {
   const [open, setOpen] = useState(true);
+  const [filter, setFilter] = useState<FilterMode>('all');
 
-  const passCount = groups.reduce((s, g) => s + g.checks.filter(c => c.status === 'pass').length, 0);
-  const failCount = groups.reduce((s, g) => s + g.checks.filter(c => c.status === 'fail').length, 0);
-  const warnCount = groups.reduce((s, g) => s + g.checks.filter(c => c.status === 'warn').length, 0);
+  const allChecks = groups.flatMap(g => g.checks);
+  const passCount = allChecks.filter(c => c.status === 'pass').length;
+  const failCount = allChecks.filter(c => c.status === 'fail').length;
+  const warnCount = allChecks.filter(c => c.status === 'warn').length;
+  const criticalCount = allChecks.filter(c => c.status === 'fail' && c.severity === 'critical').length;
+
+  const statusBadge = status === 'PASS'
+    ? 'bg-green-100 text-green-700 border border-green-200'
+    : status === 'WARN'
+      ? 'bg-amber-100 text-amber-700 border border-amber-200'
+      : status === 'FAIL'
+        ? 'bg-red-100 text-red-700 border border-red-200'
+        : '';
 
   return (
     <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
@@ -825,23 +985,35 @@ function PageAuditSection({ title, url, groups, status }: { title: string; url: 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3">
             <h3 className="text-base font-bold text-slate-900">{title}</h3>
-            {status === 'PASS' && <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700">PASS</span>}
-            {status === 'WARN' && <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">WARN</span>}
-            {status === 'FAIL' && <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700">FAIL</span>}
+            {status && <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full ${statusBadge}`}>{status}</span>}
           </div>
           <p className="text-xs text-slate-500 mt-0.5 truncate font-mono">{url}</p>
         </div>
-        <div className="flex gap-4 text-xs shrink-0">
-          <span className="text-green-600 font-semibold">{passCount} pass</span>
-          {warnCount > 0 && <span className="text-amber-600 font-semibold">{warnCount} warn</span>}
-          {failCount > 0 && <span className="text-red-600 font-semibold">{failCount} fail</span>}
+        <div className="flex items-center gap-3 text-xs shrink-0">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-green-500" /><span className="font-bold text-green-600">{passCount}</span>
+          </div>
+          {warnCount > 0 && <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-orange-500" /><span className="font-bold text-orange-600">{warnCount}</span>
+          </div>}
+          {failCount > 0 && <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-red-500" /><span className="font-bold text-red-600">{failCount}</span>
+          </div>}
         </div>
       </button>
       {open && (
-        <div className="border-t border-slate-100 px-6 py-4 space-y-3">
-          {groups.map((group) => (
-            <CheckGroupCard key={group.id} group={group} defaultOpen={group.checks.some(c => c.status === 'fail' || c.status === 'warn')} />
-          ))}
+        <div className="border-t border-slate-100 px-6 py-4 space-y-4">
+          <QuickFilters filter={filter} setFilter={setFilter} counts={{
+            all: passCount + warnCount + failCount,
+            critical: criticalCount,
+            issues: failCount + warnCount,
+            passed: passCount,
+          }} />
+          <div className="space-y-3">
+            {groups.map((group) => (
+              <CheckGroupCard key={group.id} group={group} filter={filter} defaultOpen={group.checks.some(c => c.status === 'fail' || c.status === 'warn')} />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -1445,8 +1617,103 @@ export default function SEOAgent() {
   const passCount = allChecks.filter(c => c.status === 'pass').length;
   const warnCount = allChecks.filter(c => c.status === 'warn').length;
   const failCount = allChecks.filter(c => c.status === 'fail').length;
+  const criticalCount = allChecks.filter(c => c.status === 'fail' && c.severity === 'critical').length;
   const totalScored = passCount + warnCount + failCount;
   const overallScore = totalScored > 0 ? Math.round(((passCount + warnCount * 0.5) / totalScored) * 100) : 0;
+
+  // ── Export helpers ──────────────────────────────────────────────
+
+  const domain = useMemo(() => {
+    try { return new URL(homeUrl || '').hostname; } catch { return homeUrl || 'unknown'; }
+  }, [homeUrl]);
+
+  const [exportCopied, setExportCopied] = useState(false);
+
+  const generateClickUpExport = useCallback((criticalOnly = false) => {
+    const issues = allChecks.filter(c => c.status === 'fail' || c.status === 'warn');
+    const filtered = criticalOnly ? issues.filter(c => c.status === 'fail' && c.severity === 'critical') : issues;
+    const lines: string[] = [`Client: ${domain}`, `Audit Date: ${new Date().toISOString().split('T')[0]}`, `Total Issues: ${filtered.length}`, ''];
+
+    for (const issue of filtered) {
+      const issueType = issue.category || 'Technical SEO';
+      const priority = issue.status === 'fail' && issue.severity === 'critical' ? 'High' : issue.status === 'fail' ? 'High' : 'Medium';
+      lines.push(`---`);
+      lines.push(`Issue: ${issue.label}`);
+      lines.push(`Priority: ${priority}`);
+      lines.push(`Type: ${issueType}`);
+      lines.push(`Description: ${issue.detail}`);
+      if (issue.fix) lines.push(`Recommendation: ${issue.fix}`);
+      lines.push('');
+    }
+    return lines.join('\n');
+  }, [allChecks, domain]);
+
+  const generateMarkdownReport = useCallback(() => {
+    const lines: string[] = [
+      `# SEO Audit Report: ${domain}`,
+      `**Date:** ${new Date().toISOString().split('T')[0]}`,
+      `**Score:** ${overallScore}/100`,
+      `**Checks:** ${passCount} passed, ${warnCount} warnings, ${failCount} failed`,
+      '',
+      '## Summary',
+      `| Metric | Count |`,
+      `|--------|-------|`,
+      `| Total Checks | ${allChecks.length} |`,
+      `| Passed | ${passCount} |`,
+      `| Warnings | ${warnCount} |`,
+      `| Failed | ${failCount} |`,
+      `| Critical | ${criticalCount} |`,
+      '',
+    ];
+
+    const allPages = [
+      { title: 'Homepage', groups: homeGroups },
+      { title: 'Article', groups: articleGroups },
+      ...otherGroupsList.map(o => ({ title: (o.row.data?.pageType as string) ?? 'other', groups: o.groups })),
+    ];
+
+    for (const page of allPages) {
+      if (page.groups.length === 0) continue;
+      lines.push(`## ${page.title}`);
+      lines.push('');
+      for (const group of page.groups) {
+        lines.push(`### ${group.title}`);
+        lines.push('');
+        for (const check of group.checks) {
+          const icon = check.status === 'pass' ? 'PASS' : check.status === 'warn' ? 'WARN' : check.status === 'fail' ? 'FAIL' : 'INFO';
+          lines.push(`- **[${icon}]** ${check.label}: ${check.detail}`);
+          if ((check.status === 'fail' || check.status === 'warn') && check.fix) {
+            lines.push(`  - Fix: ${check.fix}`);
+          }
+        }
+        lines.push('');
+      }
+    }
+
+    if (allRecs.length > 0) {
+      lines.push('## Recommendations');
+      lines.push('');
+      for (const r of allRecs) {
+        lines.push(`- **[${r.priority}]** [${r.area}] ${r.message} — ${r.fixHint}`);
+      }
+    }
+
+    return lines.join('\n');
+  }, [domain, overallScore, passCount, warnCount, failCount, criticalCount, allChecks, homeGroups, articleGroups, otherGroupsList, allRecs]);
+
+  const copyClickUp = useCallback((criticalOnly = false) => {
+    const text = generateClickUpExport(criticalOnly);
+    navigator.clipboard.writeText(text).then(() => { setExportCopied(true); setTimeout(() => setExportCopied(false), 2500); }).catch(() => {});
+  }, [generateClickUpExport]);
+
+  const downloadMarkdown = useCallback(() => {
+    const md = generateMarkdownReport();
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `seo-audit-${domain}-${new Date().toISOString().split('T')[0]}.md`; a.click();
+    URL.revokeObjectURL(url);
+  }, [generateMarkdownReport, domain]);
 
   // Build per-page status for executive summary
   const pageResultsSummary: { title: string; url: string; pass: number; warn: number; fail: number }[] = [];
@@ -1543,19 +1810,53 @@ export default function SEOAgent() {
         {/* Results */}
         {runData && (
           <div className="space-y-6">
-            {/* Summary dashboard */}
-            <div className="bg-white rounded-2xl shadow-lg p-6">
-              <div className="flex flex-col sm:flex-row items-center gap-6">
-                <ScoreCircle pass={passCount} warn={warnCount} fail={failCount} />
-                <div className="flex-1 text-center sm:text-left">
-                  <h2 className="text-xl font-bold text-slate-900">Audit Results</h2>
-                  <p className="text-sm text-slate-500 mt-1">{allChecks.length} checks across {allGroupsList.reduce((s, g) => s + g.length, 0)} categories</p>
+            {/* Enhanced Summary Dashboard */}
+            <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+              <div className="p-6">
+                <div className="flex flex-col sm:flex-row items-center gap-6">
+                  <ScoreCircle pass={passCount} warn={warnCount} fail={failCount} />
+                  <div className="flex-1 text-center sm:text-left">
+                    <h2 className="text-xl font-bold text-slate-900">Audit Results</h2>
+                    <p className="text-sm text-slate-500 mt-1">{allChecks.length} checks across {allGroupsList.reduce((s, g) => s + g.length, 0)} categories</p>
+                  </div>
+                  <div className="grid grid-cols-4 gap-4 text-center">
+                    <div className="bg-green-50 rounded-xl px-4 py-3 border border-green-100">
+                      <p className="text-2xl font-bold text-green-600">{passCount}</p>
+                      <p className="text-[10px] font-semibold text-green-600 uppercase tracking-wider">Passed</p>
+                    </div>
+                    <div className="bg-orange-50 rounded-xl px-4 py-3 border border-orange-100">
+                      <p className="text-2xl font-bold text-orange-600">{warnCount}</p>
+                      <p className="text-[10px] font-semibold text-orange-600 uppercase tracking-wider">Warnings</p>
+                    </div>
+                    <div className="bg-red-50 rounded-xl px-4 py-3 border border-red-100">
+                      <p className="text-2xl font-bold text-red-600">{failCount}</p>
+                      <p className="text-[10px] font-semibold text-red-600 uppercase tracking-wider">Failed</p>
+                    </div>
+                    <div className="bg-red-50/60 rounded-xl px-4 py-3 border border-red-200">
+                      <p className="text-2xl font-bold text-red-700">{criticalCount}</p>
+                      <p className="text-[10px] font-semibold text-red-700 uppercase tracking-wider">Critical</p>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex gap-6 text-center">
-                  <div><p className="text-2xl font-bold text-green-600">{passCount}</p><p className="text-xs text-slate-500">Pass</p></div>
-                  <div><p className="text-2xl font-bold text-amber-600">{warnCount}</p><p className="text-xs text-slate-500">Warn</p></div>
-                  <div><p className="text-2xl font-bold text-red-600">{failCount}</p><p className="text-xs text-slate-500">Fail</p></div>
-                </div>
+              </div>
+              {/* Export toolbar */}
+              <div className="border-t border-slate-100 bg-slate-50/50 px-6 py-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-slate-500 mr-2">Export:</span>
+                <button onClick={() => copyClickUp(false)}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors shadow-sm">
+                  {exportCopied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Clipboard className="w-3.5 h-3.5" />}
+                  {exportCopied ? 'Copied!' : 'Copy for ClickUp'}
+                </button>
+                <button onClick={() => copyClickUp(true)}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-red-600 hover:text-red-800 bg-white hover:bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg transition-colors shadow-sm">
+                  <Clipboard className="w-3.5 h-3.5" />
+                  Copy Critical Only
+                </button>
+                <button onClick={downloadMarkdown}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors shadow-sm">
+                  <FileDown className="w-3.5 h-3.5" />
+                  Download Report (.md)
+                </button>
               </div>
             </div>
 

@@ -90,55 +90,6 @@ interface FetchResult {
   redirected: boolean;
 }
 
-const SIDECAR_BASE = (process.env.SCRAPLING_SIDECAR_URL || '').replace(/\/+$/, '');
-
-/**
- * Try the Scrapling sidecar first. Returns null on failure so we fall through.
- */
-async function trySidecarFetch(
-  url: string,
-  timeoutMs: number,
-  userAgent?: string,
-): Promise<FetchResult | null> {
-  if (!SIDECAR_BASE) return null;
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs + 5000);
-    const res = await fetch(`${SIDECAR_BASE}/fetch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url,
-        timeout: Math.ceil(timeoutMs / 1000),
-        ...(userAgent ? { user_agent: userAgent } : {}),
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-
-    if (!res.ok) return null;
-    const data = await res.json() as Record<string, unknown>;
-    if (data.error) return null;
-
-    const status = (data.status as number) || 200;
-    const html = (data.html as string) || '';
-    const headers = (data.headers as Record<string, string>) || {};
-    const finalUrl = (data.url as string) || url;
-
-    return {
-      ok: status >= 200 && status < 300,
-      status,
-      text: html,
-      contentType: headers['content-type'] || '',
-      finalUrl,
-      redirected: finalUrl !== url,
-    };
-  } catch {
-    return null;
-  }
-}
-
 async function safeFetch(
   url: string,
   timeoutMs: number,
@@ -147,17 +98,6 @@ async function safeFetch(
   const empty: FetchResult = { ok: false, status: 0, text: '', contentType: '', finalUrl: url, redirected: false };
   if (!isSafeUrl(url)) return empty;
 
-  // Try sidecar first (anti-bot bypass)
-  const sidecarResult = await trySidecarFetch(url, timeoutMs, opts.userAgent ?? UA_BROWSER);
-  if (sidecarResult) {
-    const maxBytes = opts.maxBytes ?? 2 * 1024 * 1024;
-    if (sidecarResult.text.length > maxBytes) {
-      sidecarResult.text = sidecarResult.text.slice(0, maxBytes);
-    }
-    return sidecarResult;
-  }
-
-  // Fallback to native fetch
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 

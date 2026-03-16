@@ -7,8 +7,6 @@
  * are resolved via the async `runRemoteChecks`).
  */
 
-import { smartFetch } from './scrapling-client.js';
-
 // ── HTML helpers ────────────────────────────────────────────────
 
 export function extractTextContent(html) {
@@ -203,8 +201,8 @@ export function calculateOrphanRisk(internalLinkCount, pageDepth) {
 export async function fetchRobotsTxt(baseUrl) {
   try {
     const u = new URL(baseUrl);
-    const result = await smartFetch(`${u.protocol}//${u.host}/robots.txt`, { timeout: 15 });
-    if (result.status >= 200 && result.status < 400) return { valid: true, content: (result.html || '').substring(0, 500) };
+    const res = await fetch(`${u.protocol}//${u.host}/robots.txt`);
+    if (res.ok) return { valid: true, content: (await res.text()).substring(0, 500) };
   } catch { /* ignore */ }
   return { valid: false, content: null };
 }
@@ -213,9 +211,8 @@ export async function checkSitemapXml(baseUrl) {
   try {
     const u = new URL(baseUrl);
     const url = `${u.protocol}//${u.host}/sitemap.xml`;
-    const result = await smartFetch(url, { timeout: 15 });
-    const ok = result.status >= 200 && result.status < 400;
-    return { valid: ok, location: ok ? url : null };
+    const res = await fetch(url);
+    return { valid: res.ok, location: res.ok ? url : null };
   } catch { /* ignore */ }
   return { valid: false, location: null };
 }

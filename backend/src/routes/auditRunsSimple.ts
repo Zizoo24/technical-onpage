@@ -114,21 +114,22 @@ async function auditSingleUrl(
 
   // ════════════════════════════════════════════════════════════════
   // CRAWL VALIDATION GATE
-  // Only run page-level SEO checks when we have a genuine 200 response.
-  // Non-200 responses produce a structured result WITHOUT running checks,
-  // preventing false SEO issues from error pages.
+  // Classify page state, but ONLY skip SEO checks when we have no
+  // usable HTML.  Many sites return 403 yet still serve the full
+  // page — we should still analyse that content.
   // ════════════════════════════════════════════════════════════════
 
   const pageState = classifyPageState(httpStatus, fetchOk);
+  const hasUsableHtml = html.length > 500 && /<!doctype|<html|<head|<body/i.test(html);
 
-  if (pageState !== 'OK') {
+  if (pageState !== 'OK' && !hasUsableHtml) {
     const finalUrl = redirectChain.length > 0 ? currentUrl : url;
     const urlOnlyType = detectPageType(finalUrl);
     const pageType = (seedType && (VALID_TYPES as readonly string[]).includes(seedType))
       ? (seedType as typeof VALID_TYPES[number])
       : urlOnlyType;
 
-    console.log(`[audit] Crawl gate: ${pageState} (HTTP ${httpStatus}) for ${url} — skipping SEO checks`);
+    console.log(`[audit] Crawl gate: ${pageState} (HTTP ${httpStatus}) for ${url} — no usable HTML, skipping SEO checks`);
 
     const data: Record<string, unknown> = {
       pageType,
@@ -164,8 +165,13 @@ async function auditSingleUrl(
     };
   }
 
+  // If we got here with a non-OK state but usable HTML, log it and continue with checks
+  if (pageState !== 'OK' && hasUsableHtml) {
+    console.log(`[audit] Crawl gate: ${pageState} (HTTP ${httpStatus}) for ${url} — usable HTML found (${html.length} bytes), running checks anyway`);
+  }
+
   // ════════════════════════════════════════════════════════════════
-  // Page state is OK — proceed with full SEO audit
+  // Proceed with full SEO audit (page OK or usable HTML despite non-200)
   // ════════════════════════════════════════════════════════════════
 
   // Use the final URL after redirects for detection and canonical checks
@@ -209,7 +215,7 @@ async function auditSingleUrl(
   const data: Record<string, unknown> = {
     pageType,
     httpStatus,
-    page_state: 'OK' as PageState,
+    page_state: pageState,
     redirectChain: redirectChain.length > 0 ? redirectChain : null,
     redirectCount: redirectChain.length,
     finalUrl: finalUrl !== url ? finalUrl : undefined,

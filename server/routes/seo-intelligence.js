@@ -4,28 +4,17 @@
  */
 import { Router } from 'express';
 import { analyzeTechnical, generateRecommendations, createErrorResponse } from '../lib/technical-checks.js';
+import { smartFetch } from '../lib/scrapling-client.js';
 
 export const seoIntelligenceRouter = Router();
 
-const FETCH_TIMEOUT = 15000;
-
 async function analyzePage(url) {
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
-    let response;
-    try {
-      response = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Technical-SEO-Analyzer/3.0)' },
-        redirect: 'follow',
-        signal: controller.signal,
-      });
-    } finally { clearTimeout(timer); }
+    const result = await smartFetch(url, { timeout: 15, userAgent: 'Mozilla/5.0 (compatible; Technical-SEO-Analyzer/3.0)' });
 
-    if (!response.ok) return createErrorResponse(url, `error: HTTP ${response.status}`);
+    if (result.status >= 400) return createErrorResponse(url, `error: HTTP ${result.status}`);
 
-    const html = await response.text();
-    const analysis = await analyzeTechnical(html, url);
+    const analysis = await analyzeTechnical(result.html, url);
     analysis.recommendations = generateRecommendations(analysis);
     return analysis;
   } catch (error) {

@@ -7,6 +7,8 @@
  * are resolved via the async `runRemoteChecks`).
  */
 
+import { smartFetch } from './scrapling-client.js';
+
 // ── HTML helpers ────────────────────────────────────────────────
 
 export function extractTextContent(html) {
@@ -197,8 +199,6 @@ export function calculateOrphanRisk(internalLinkCount, pageDepth) {
 }
 
 // ── Remote checks (require network) ────────────────────────────
-
-import { smartFetch } from './scrapling-client.js';
 
 export async function fetchRobotsTxt(baseUrl) {
   try {

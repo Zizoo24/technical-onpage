@@ -119,8 +119,14 @@ export function computeLayeredScore(data: AuditData): LayeredScore {
   // regardless of how well other signals perform.
   const indexabilitySignal = allSignals.find(s => s.id === 'indexability');
   if (indexabilitySignal && indexabilitySignal.score === 0) {
-    // Noindex page cannot score above 25
-    composite = Math.min(composite, 25);
+    // Only cap score for genuine noindex directives, NOT for crawl failures.
+    // When source is 'crawl_blocked' or 'server_error', we don't know the true
+    // indexability status, so capping the score would be a false penalty.
+    const rawVal = indexabilitySignal.rawValue as Record<string, unknown> | null;
+    const source = rawVal?.source as string | undefined;
+    if (source !== 'crawl_blocked' && source !== 'server_error') {
+      composite = Math.min(composite, 25);
+    }
   }
 
   const canonicalSignal = allSignals.find(s => s.id === 'canonical');

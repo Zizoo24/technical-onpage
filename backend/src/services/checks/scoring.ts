@@ -30,6 +30,7 @@ export interface ScoringResult {
 
 interface CheckData {
   pageType?: PageType;
+  httpStatus?: number;
   canonical?: {
     exists: boolean;
     canonicalUrl: string | null;
@@ -292,13 +293,23 @@ export function scoreResult(data: CheckData): ScoringResult {
   }
 
   // ── Content & Meta ─────────────────────────────────────────────
+  const isCrawlBlocked = data.httpStatus === 401 || data.httpStatus === 403;
+
   if (data.contentMeta) {
-    if (data.contentMeta.robotsMeta.noindex) {
+    if (data.contentMeta.robotsMeta.noindex && !isCrawlBlocked) {
+      // Only report noindex when we have a genuine page — not a 403 error page
       escalate('FAIL');
       recs.push({
         priority: 'P0', area: 'meta',
         message: 'Page has noindex directive on a seed URL',
         fixHint: 'Remove the noindex meta robots tag if this page should be indexed.',
+      });
+    } else if (isCrawlBlocked) {
+      escalate('WARN');
+      recs.push({
+        priority: 'P1', area: 'meta',
+        message: `Crawler blocked by server (HTTP ${data.httpStatus}) — cannot verify robots directives`,
+        fixHint: 'The server returned an access-denied status. Ensure the crawler can access this page, or allowlist crawl IPs.',
       });
     }
     if (data.contentMeta.robotsMeta.nofollow) {
@@ -398,8 +409,8 @@ export function scoreResult(data: CheckData): ScoringResult {
       });
     }
 
-    // X-Robots-Tag
-    if (data.contentMeta.xRobotsTag?.noindex) {
+    // X-Robots-Tag — only trust on non-blocked responses (403 error pages may have their own headers)
+    if (data.contentMeta.xRobotsTag?.noindex && !isCrawlBlocked) {
       escalate('FAIL');
       recs.push({
         priority: 'P0', area: 'meta',

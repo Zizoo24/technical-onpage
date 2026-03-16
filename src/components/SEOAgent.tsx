@@ -80,15 +80,47 @@ function buildPerfChecks(perf: Record<string, unknown> | null, meta: Record<stri
   return items;
 }
 
+/** Shared: build indexability check items accounting for HTTP status */
+function buildIndexabilityCheck(data: Record<string, unknown>): CheckItem[] {
+  const items: CheckItem[] = [];
+  const meta = data.contentMeta as Record<string, unknown> | null;
+  if (!meta) return items;
+
+  const rm = meta.robotsMeta as Record<string, unknown> | null;
+  const httpSt = typeof data.httpStatus === 'number' ? data.httpStatus : 0;
+  const crawlBlocked = httpSt === 401 || httpSt === 403;
+  const serverError = httpSt >= 500;
+
+  if (crawlBlocked) {
+    items.push(ck('indexable', 'Page is indexable', 'warn',
+      `Crawler blocked (HTTP ${httpSt}) — cannot verify indexability directives`, 'critical'));
+  } else if (serverError) {
+    items.push(ck('indexable', 'Page is indexable', 'warn',
+      `Server error (HTTP ${httpSt}) — indexability unknown`, 'critical'));
+  } else if (rm?.noindex) {
+    items.push(ck('indexable', 'Page is indexable', 'fail', 'noindex directive found', 'critical'));
+  } else {
+    items.push(ck('indexable', 'Page is indexable', 'pass', 'No noindex directive', 'critical'));
+  }
+
+  if (rm?.nofollow && !crawlBlocked) {
+    items.push(ck('nofollow', 'Link following', 'warn', 'nofollow directive found', 'warning'));
+  }
+
+  return items;
+}
+
 /** Shared: build crawlability checks from meta (X-Robots-Tag, charset, lang) */
 function buildTechMetaChecks(data: Record<string, unknown>): CheckItem[] {
   const items: CheckItem[] = [];
   const meta = data.contentMeta as Record<string, unknown> | null;
   if (!meta) return items;
 
-  // X-Robots-Tag
+  // X-Robots-Tag — skip on 401/403 since the header comes from the error response, not the real page
+  const httpSt = typeof data.httpStatus === 'number' ? data.httpStatus : 0;
+  const crawlBlocked = httpSt === 401 || httpSt === 403;
   const xrt = meta.xRobotsTag as Record<string, unknown> | null;
-  if (xrt) {
+  if (xrt && !crawlBlocked) {
     if (xrt.noindex) items.push(ck('x_robots_noindex', 'X-Robots-Tag', 'fail', 'HTTP header contains noindex', 'critical'));
     else items.push(ck('x_robots_ok', 'X-Robots-Tag', 'pass', 'No blocking directives in HTTP header', 'info'));
   }
@@ -153,8 +185,22 @@ function buildHomepageChecklist(row: AuditResultRow, siteChecks: Record<string, 
   }
   if (meta) {
     const rm = meta.robotsMeta as Record<string, unknown> | null;
-    crawl.push(ck('indexable', 'Page is indexable', rm?.noindex ? 'fail' : 'pass', rm?.noindex ? 'noindex directive found' : 'No noindex directive', 'critical'));
-    if (rm?.nofollow) crawl.push(ck('nofollow', 'Link following', 'warn', 'nofollow directive found', 'warning'));
+    const httpSt = typeof data.httpStatus === 'number' ? data.httpStatus : 0;
+    const crawlBlocked = httpSt === 401 || httpSt === 403;
+    const serverError = httpSt >= 500;
+
+    if (crawlBlocked) {
+      crawl.push(ck('indexable', 'Page is indexable', 'warn',
+        `Crawler blocked (HTTP ${httpSt}) — cannot verify indexability directives`, 'critical'));
+    } else if (serverError) {
+      crawl.push(ck('indexable', 'Page is indexable', 'warn',
+        `Server error (HTTP ${httpSt}) — indexability unknown`, 'critical'));
+    } else if (rm?.noindex) {
+      crawl.push(ck('indexable', 'Page is indexable', 'fail', 'noindex directive found', 'critical'));
+    } else {
+      crawl.push(ck('indexable', 'Page is indexable', 'pass', 'No noindex directive', 'critical'));
+    }
+    if (rm?.nofollow && !crawlBlocked) crawl.push(ck('nofollow', 'Link following', 'warn', 'nofollow directive found', 'warning'));
   }
   crawl.push(...buildTechMetaChecks(data));
   if (crawl.length > 0) groups.push({ id: 'crawl', title: 'Crawlability & Access', icon: <Globe className="w-4 h-4" />, checks: crawl });
@@ -229,11 +275,7 @@ function buildArticleChecklist(row: AuditResultRow): CheckGroup[] {
 
   // 1. Indexability
   const idx: CheckItem[] = [];
-  if (meta) {
-    const rm = meta.robotsMeta as Record<string, unknown> | null;
-    idx.push(ck('indexable', 'Page is indexable', rm?.noindex ? 'fail' : 'pass', rm?.noindex ? 'noindex directive found' : 'No noindex directive', 'critical'));
-    if (rm?.nofollow) idx.push(ck('nofollow', 'Link following', 'warn', 'nofollow directive found', 'warning'));
-  }
+  idx.push(...buildIndexabilityCheck(data));
   if (canonical) {
     idx.push(ck('canonical_exists', 'Canonical tag exists', canonical.exists ? 'pass' : 'fail', canonical.exists ? `${String(canonical.canonicalUrl || '')}` : 'No canonical tag found', 'critical'));
     if (canonical.exists) {
@@ -377,10 +419,7 @@ function buildAuthorChecklist(row: AuditResultRow): CheckGroup[] {
 
   // 1. Indexability
   const idx: CheckItem[] = [];
-  if (meta) {
-    const rm = meta.robotsMeta as Record<string, unknown> | null;
-    idx.push(ck('indexable', 'Page is indexable', rm?.noindex ? 'fail' : 'pass', rm?.noindex ? 'noindex directive found' : 'No noindex directive', 'critical'));
-  }
+  idx.push(...buildIndexabilityCheck(data));
   if (canonical) {
     idx.push(ck('canonical_exists', 'Canonical tag exists', canonical.exists ? 'pass' : 'fail', canonical.exists ? `${String(canonical.canonicalUrl || '')}` : 'No canonical tag found', 'critical'));
     if (canonical.exists) {
@@ -449,10 +488,7 @@ function buildVideoChecklist(row: AuditResultRow): CheckGroup[] {
 
   // 1. Indexability
   const idx: CheckItem[] = [];
-  if (meta) {
-    const rm = meta.robotsMeta as Record<string, unknown> | null;
-    idx.push(ck('indexable', 'Page is indexable', rm?.noindex ? 'fail' : 'pass', rm?.noindex ? 'noindex directive found' : 'No noindex directive', 'critical'));
-  }
+  idx.push(...buildIndexabilityCheck(data));
   if (canonical) {
     idx.push(ck('canonical_exists', 'Canonical tag exists', canonical.exists ? 'pass' : 'fail', canonical.exists ? `${String(canonical.canonicalUrl || '')}` : 'No canonical tag found', 'critical'));
     if (canonical.exists) {
@@ -542,10 +578,7 @@ function buildSectionChecklist(row: AuditResultRow, siteChecks: Record<string, u
 
   // 1. Indexability
   const idx: CheckItem[] = [];
-  if (meta) {
-    const rm = meta.robotsMeta as Record<string, unknown> | null;
-    idx.push(ck('indexable', 'Page is indexable', rm?.noindex ? 'fail' : 'pass', rm?.noindex ? 'noindex directive found' : 'No noindex directive', 'critical'));
-  }
+  idx.push(...buildIndexabilityCheck(data));
   if (canonical) {
     idx.push(ck('canonical_exists', 'Canonical tag exists', canonical.exists ? 'pass' : 'fail', canonical.exists ? `${String(canonical.canonicalUrl || '')}` : 'No canonical tag found', 'critical'));
     if (canonical.exists) {

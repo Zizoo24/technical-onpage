@@ -44,6 +44,9 @@ interface CheckData {
     missingFields: string[];
     presentFields?: string[];
     notes: string[];
+    richResultsEligible?: string[];
+    detectedNonEligible?: string[];
+    extractionSources?: string[];
   } | null;
   redirectCount?: number;
   contentMeta?: {
@@ -164,12 +167,22 @@ export function scoreResult(data: CheckData): ScoringResult {
       ];
       const hasArticle = types.some(t => ARTICLE_SCHEMA_TYPES.includes(t));
       if (!hasArticle) {
-        escalate('FAIL');
-        recs.push({
-          priority: 'P0', area: 'schema',
-          message: 'Article page missing NewsArticle or Article schema',
-          fixHint: 'Add a JSON-LD block with @type "NewsArticle" including headline and datePublished.',
-        });
+        if (types.length > 0) {
+          // Schema exists but no article-specific type — WARN, not FAIL
+          escalate('WARN');
+          recs.push({
+            priority: 'P1', area: 'schema',
+            message: `Article page has structured data (${types.join(', ')}) but no Rich Results eligible article schema`,
+            fixHint: 'Add a JSON-LD block with @type "NewsArticle" including headline and datePublished for Rich Results eligibility.',
+          });
+        } else {
+          escalate('FAIL');
+          recs.push({
+            priority: 'P0', area: 'schema',
+            message: 'Article page has no structured data at all',
+            fixHint: 'Add a JSON-LD block with @type "NewsArticle" including headline and datePublished.',
+          });
+        }
       } else {
         for (const field of data.structuredData.missingFields) {
           if (field === 'headline' || field === 'datePublished') {
@@ -211,13 +224,24 @@ export function scoreResult(data: CheckData): ScoringResult {
     }
     if (pageType === 'home') {
       const types = data.structuredData.typesFound;
-      if (!types.includes('WebSite') && !types.includes('Organization')) {
-        escalate('WARN');
-        recs.push({
-          priority: 'P1', area: 'schema',
-          message: 'Home page missing WebSite or Organization schema',
-          fixHint: 'Add a JSON-LD block with @type "WebSite" or "Organization".',
-        });
+      const hasHomeSchema = types.includes('WebSite') || types.includes('Organization') ||
+        types.includes('NewsMediaOrganization') || types.includes('Corporation') || types.includes('WebPage');
+      if (!hasHomeSchema) {
+        if (types.length > 0) {
+          // Has schema, just not homepage-specific
+          recs.push({
+            priority: 'P2', area: 'schema',
+            message: `Homepage has structured data (${types.join(', ')}) — consider adding WebSite schema for sitelinks searchbox`,
+            fixHint: 'Add a JSON-LD block with @type "WebSite" including potentialAction for sitelinks searchbox.',
+          });
+        } else {
+          escalate('WARN');
+          recs.push({
+            priority: 'P1', area: 'schema',
+            message: 'Home page has no structured data',
+            fixHint: 'Add a JSON-LD block with @type "WebSite" or "Organization".',
+          });
+        }
       }
     }
     if (pageType === 'author') {

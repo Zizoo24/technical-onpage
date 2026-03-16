@@ -200,7 +200,9 @@ export function classifyContext(data: AuditData): ScoringSignal[] {
         schemaExpl = `Article page but schema types are [${types.join(', ')}] — no article type present`;
       }
     } else if (data.pageType === 'home' && types.length > 0) {
-      const hasHomeType = types.some(t => ['WebSite', 'Organization', 'WebPage'].includes(t));
+      const hasHomeType = types.some(t =>
+        ['WebSite', 'Organization', 'NewsMediaOrganization', 'Corporation', 'WebPage', 'CollectionPage'].includes(t)
+      );
       if (!hasHomeType) {
         schemaAppropriate = false;
         schemaExpl = `Homepage but schema types are [${types.join(', ')}] — missing WebSite/Organization`;

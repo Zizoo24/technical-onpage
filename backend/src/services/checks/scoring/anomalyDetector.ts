@@ -92,7 +92,11 @@ export function detectAnomalies(data: AuditData): ScoringSignal[] {
   // ── Noindex + nofollow combination ─────────────────────────────
   // A page submitted for audit that blocks both indexing and link
   // following is suspicious — why audit a page you don't want indexed?
-  if (meta) {
+  // But skip this check when the page was fetched via 401/403 — the
+  // noindex/nofollow may come from the error page, not the real content.
+  const httpStatus = data.httpStatus ?? 0;
+  const crawlBlocked = httpStatus === 401 || httpStatus === 403;
+  if (meta && !crawlBlocked) {
     const isNoindex = meta.robotsMeta.noindex || meta.xRobotsTag?.noindex;
     const isNofollow = meta.robotsMeta.nofollow;
     if (isNoindex && isNofollow) {

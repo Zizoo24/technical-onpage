@@ -15,22 +15,93 @@ export function scoreTechnicalQuality(data: AuditData): ScoringSignal[] {
   const signals: ScoringSignal[] = [];
 
   // ── Indexability (critical foundation) ──────────────────────────
+  // Important: HTTP status errors must NOT be interpreted as noindex.
+  // A 403 means "crawler blocked", not "page has noindex directive".
   const meta = data.contentMeta;
+  const httpStatus = data.httpStatus ?? 0;
+  const isCrawlBlocked = httpStatus === 401 || httpStatus === 403;
+  const isServerError = httpStatus >= 500;
+  const isNon200 = httpStatus > 0 && httpStatus !== 200 && !(httpStatus >= 200 && httpStatus < 300);
+
   if (meta) {
-    const isNoindex = meta.robotsMeta.noindex || meta.xRobotsTag?.noindex;
+    const hasExplicitNoindex = meta.robotsMeta.noindex || meta.xRobotsTag?.noindex;
+
+    if (hasExplicitNoindex && !isCrawlBlocked) {
+      // Genuine noindex directive found on a successfully fetched page
+      signals.push({
+        id: 'indexability',
+        label: 'Page Indexability',
+        category: 'quality',
+        score: 0,
+        weight: 0.15,
+        rawValue: { noindex: meta.robotsMeta.noindex, xRobotsNoindex: meta.xRobotsTag?.noindex, httpStatus, source: 'noindex_directive' },
+        explanation: 'Page blocked from indexing via noindex directive',
+        availability: 'implemented',
+      });
+    } else if (isCrawlBlocked) {
+      // HTTP 401/403: crawler was blocked — do NOT treat as noindex
+      // Any "noindex" parsed from a 403 error page body is unreliable
+      signals.push({
+        id: 'indexability',
+        label: 'Page Indexability',
+        category: 'quality',
+        score: 0.5,
+        weight: 0.15,
+        rawValue: { noindex: false, xRobotsNoindex: false, httpStatus, source: 'crawl_blocked' },
+        explanation: `Crawler blocked by server (HTTP ${httpStatus}) — cannot verify indexability directives`,
+        availability: 'partially',
+      });
+    } else if (isServerError) {
+      // Server error: indexability status unknown
+      signals.push({
+        id: 'indexability',
+        label: 'Page Indexability',
+        category: 'quality',
+        score: 0.3,
+        weight: 0.15,
+        rawValue: { noindex: false, xRobotsNoindex: false, httpStatus, source: 'server_error' },
+        explanation: `Server error (HTTP ${httpStatus}) — indexability could not be determined`,
+        availability: 'partially',
+      });
+    } else {
+      // Page fetched successfully, no noindex found
+      signals.push({
+        id: 'indexability',
+        label: 'Page Indexability',
+        category: 'quality',
+        score: 1,
+        weight: 0.15,
+        rawValue: { noindex: meta.robotsMeta.noindex, xRobotsNoindex: meta.xRobotsTag?.noindex, httpStatus, source: 'verified' },
+        explanation: 'Page is indexable (no noindex directives found)',
+        availability: 'implemented',
+      });
+    }
+  } else if (isCrawlBlocked) {
+    // No contentMeta at all (fetch completely failed with 401/403)
     signals.push({
       id: 'indexability',
       label: 'Page Indexability',
       category: 'quality',
-      score: isNoindex ? 0 : 1,
+      score: 0.5,
       weight: 0.15,
-      rawValue: { noindex: meta.robotsMeta.noindex, xRobotsNoindex: meta.xRobotsTag?.noindex },
-      explanation: isNoindex
-        ? 'Page blocked from indexing via noindex directive'
-        : 'Page is indexable (no noindex directives found)',
-      availability: 'implemented',
+      rawValue: { noindex: false, xRobotsNoindex: false, httpStatus, source: 'crawl_blocked' },
+      explanation: `Crawler blocked by server (HTTP ${httpStatus}) — cannot verify indexability`,
+      availability: 'partially',
     });
+  } else if (isServerError) {
+    signals.push({
+      id: 'indexability',
+      label: 'Page Indexability',
+      category: 'quality',
+      score: 0.3,
+      weight: 0.15,
+      rawValue: { noindex: false, xRobotsNoindex: false, httpStatus, source: 'server_error' },
+      explanation: `Server error (HTTP ${httpStatus}) — indexability unknown`,
+      availability: 'partially',
+    });
+  }
 
+  if (meta) {
     // Nofollow reduces link equity flow — penalise but less than noindex
     signals.push({
       id: 'link_equity_flow',

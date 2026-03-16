@@ -175,7 +175,7 @@ function resetHealthCache() {
   _healthCheckedAt = 0;
 }
 
-module.exports = {
+export {
   isSidecarAvailable,
   scraplingFetch,
   scraplingFetchBatch,
